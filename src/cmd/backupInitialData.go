@@ -16,7 +16,7 @@ limitations under the License.
 package cmd
 
 import (
-	//"fmt"
+	"fmt"
 	"github.com/redhat-ztp/openshift-ai-trigger-backup/src/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -36,6 +36,8 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println(client)
+	return nil
 }
 
 var backupInitialDataCmd = &cobra.Command{
@@ -50,11 +52,10 @@ var backupInitialDataCmd = &cobra.Command{
 			log.Error(err)
 			return err
 		}
-		return nil
-
 
 		// launch jobs for live image and release
-		err := launchInitialBackupJobs(KubeconfigPath, cmd.Flags().GetString("Spoke"))
+		Spoke, _ := cmd.Flags().GetString("Spoke")
+		err := launchInitialBackupJobs(KubeconfigPath, Spoke)
 		return err
 	},
 }
