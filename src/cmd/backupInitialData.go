@@ -16,8 +16,8 @@ limitations under the License.
 package cmd
 
 import (
-	"client"
 	//"fmt"
+	"github.com/redhat-ztp/openshift-ai-trigger-backup/src/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
