@@ -36,7 +36,10 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(client)
+
+	if ! client.SpokeClusterExists() {
+		log.Warn(fmt.Sprintf("Cluster %s does not exist", Spoke))
+	}
 	return nil
 }
 
