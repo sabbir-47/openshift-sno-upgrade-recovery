@@ -16,7 +16,7 @@ all: build
 .PHONY: all
 
 build:
-	CGO_ENABLED=0 go build -o build/openshift-ai-trigger-backup src/main.go
+	./hack/build-go.sh
 .PHONY: build
 
 build-image:
@@ -27,8 +27,5 @@ push-image:
 	$(CONTAINER_COMMAND) push ${IMAGE}
 .PHONY: push-image
 
-clean:
-	rm -rf build
-.PHONY: clean
 
 GO_TEST_PACKAGES :=./pkg/... ./cmd/...

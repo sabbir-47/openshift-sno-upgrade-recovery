@@ -17,6 +17,7 @@ package root
 
 import (
 	"fmt"
+
 	"github.com/redhat-ztp/openshift-ai-trigger-backup/pkg/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -27,7 +28,6 @@ import (
 	//"strings"
 )
 
-
 // it will connect to kubernetes and retrieve the live image
 // and release image needed to back up in the spoke cluster
 // it will create policies triggering jobs on the spoke
@@ -37,9 +37,21 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
 		return err
 	}
 
-	if ! client.SpokeClusterExists() {
+	// check if cluster exists and has been imported
+	if !client.SpokeClusterExists() {
 		log.Warn(fmt.Sprintf("Cluster %s does not exist", Spoke))
+		return nil
 	}
+
+	// retrieve version of the cluster, and checks for live img on the config
+	liveImg, err := client.GetRootFSUrl()
+	if err != nil {
+		log.Error(fmt.Sprintf("Cannot retrieve root fs from %s", Spoke))
+		return nil
+	}
+
+	// we have liveImg
+	fmt.Println(liveImg)
 	return nil
 }
 
@@ -64,7 +76,7 @@ var backupInitialDataCmd = &cobra.Command{
 }
 
 func init() {
-	
+
 	rootCmd.AddCommand(backupInitialDataCmd)
 
 	backupInitialDataCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
