@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -107,12 +108,11 @@ func (c Client) GetRootFsFromVersion(version string) (string, error) {
 
 	}
 	return "", err
-
 }
 
 // function to retrieve the openshift version and retrieve rootfs
 func (c Client) GetRootFSUrl() (string, error) {
-	// retrieve agentserviceconfig for that spoke
+	// retrieve clusterdeployment for that spoke
 	gvr := schema.GroupVersionResource{
 		Group:    "hive.openshift.io",
 		Version:  "v1",
@@ -155,4 +155,70 @@ func (c Client) GetRootFSUrl() (string, error) {
 	}
 	return "", nil
 
+}
+
+// function to query an imageset and return the image
+func (c Client) GetImageFromImageSet(name string) (string, error) {
+	gvr := schema.GroupVersionResource{
+		Group:    "hive.openshift.io",
+		Version:  "v1",
+		Resource: "clusterimagesets",
+	}
+
+	foundImageset, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), name, v1.GetOptions{})
+
+	if err != nil {
+		log.Error(err)
+		return "", err
+	}
+
+	if foundImageset != nil {
+		// retrieve the images section
+		spec, _, _ := unstructured.NestedMap(foundImageset.Object, "spec")
+		release := spec["releaseImage"]
+		fmt.Println(release)
+
+	}
+	return "", err
+
+}
+
+// function to retrieve a Release Image of a given cluster
+func (c Client) GetReleaseImage() (string, error) {
+	// retrieve agentclusterinstall for that spoke
+	gvr := schema.GroupVersionResource{
+		Group:    "extensions.hive.openshift.io",
+		Version:  "v1beta1",
+		Resource: "agentclusterinstalls",
+	}
+
+	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), c.Spoke, v1.GetOptions{})
+
+	if err != nil {
+		log.Error(err)
+		return "", err
+	}
+
+	// transform to typed and retrieve version
+	if foundSpokeCluster != nil {
+		spec, _, _ := unstructured.NestedMap(foundSpokeCluster.Object, "spec")
+		imageSetRef := spec["imageSetRef"].(map[string]interface{})
+
+		if imageSetRef != nil {
+			clusterImageSetName := imageSetRef["name"].(string)
+			if clusterImageSetName != "" {
+				// need to retrieve url from imageset
+				releaseImage, err := c.GetImageFromImageSet(clusterImageSetName)
+
+				if err != nil {
+					log.Error(err)
+					return "", err
+				}
+
+				return releaseImage, nil
+			}
+		}
+	}
+
+	return "", nil
 }

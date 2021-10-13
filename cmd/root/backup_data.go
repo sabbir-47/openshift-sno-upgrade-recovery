@@ -50,8 +50,12 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
 		return nil
 	}
 
-	// we have liveImg
 	fmt.Println(liveImg)
+
+	// now extract the release image
+	releaseImg, err := client.GetReleaseImage()
+	fmt.Println(releaseImg)
+
 	return nil
 }
 
