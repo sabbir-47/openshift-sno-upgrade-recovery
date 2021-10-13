@@ -31,8 +31,8 @@ import (
 // it will connect to kubernetes and retrieve the live image
 // and release image needed to back up in the spoke cluster
 // it will create policies triggering jobs on the spoke
-func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
-	client, err := client.New(KubeconfigPath, Spoke)
+func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) error {
+	client, err := client.New(KubeconfigPath, Spoke, BinaryImage, BackupPath)
 	if err != nil {
 		return err
 	}
@@ -50,11 +50,23 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string) error {
 		return nil
 	}
 
-	fmt.Println(liveImg)
+	if liveImg != "" {
+		// create policy for backing up live image
+		_ = client.LaunchLiveImageBackup(liveImg)
+	}
 
 	// now extract the release image
 	releaseImg, err := client.GetReleaseImage()
-	fmt.Println(releaseImg)
+
+	if err != nil {
+		log.Error(fmt.Sprintf("Cannot retrieve root fs from %s", Spoke))
+		return nil
+	}
+
+	if releaseImg != "" {
+		// create policy for backup up release image
+		//client.launchReleaseImageBackup(releaseImg)
+	}
 
 	return nil
 }
@@ -72,9 +84,14 @@ var backupInitialDataCmd = &cobra.Command{
 			return err
 		}
 
-		// launch jobs for live image and release
+		// get spoke cluster
 		Spoke, _ := cmd.Flags().GetString("Spoke")
-		err := launchInitialBackupJobs(KubeconfigPath, Spoke)
+
+		// get config options
+		BinaryImage, _ := cmd.Flags().GetString("BinaryImage")
+		BackupPath, _ := cmd.Flags().GetString("BackupPath")
+
+		err := launchInitialBackupJobs(KubeconfigPath, Spoke, BinaryImage, BackupPath)
 		return err
 	},
 }
@@ -89,7 +106,12 @@ func init() {
 	backupInitialDataCmd.Flags().StringP("Spoke", "s", "", "Path to the spoke cluster")
 	backupInitialDataCmd.MarkFlagRequired("Spoke")
 
+	backupInitialDataCmd.Flags().StringP("BinaryImage", "l", "quay.io/yrobla/openshift-ai-image-backup", "Path to the binary for image backups")
+	backupInitialDataCmd.Flags().StringP("BackupPath", "p", "/var/recovery", "Path where to store the backups")
+
 	// bind to viper
 	viper.BindPFlag("KubeconfigPath", backupInitialDataCmd.Flags().Lookup("KubeconfigPath"))
 	viper.BindPFlag("Spoke", backupInitialDataCmd.Flags().Lookup("Spoke"))
+	viper.BindPFlag("BinaryImage", backupInitialDataCmd.Flags().Lookup("BinaryImage"))
+	viper.BindPFlag("BackupPath", backupInitialDataCmd.Flags().Lookup("BackupPath"))
 }

@@ -1,13 +1,17 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+
+	"text/template"
 
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -15,11 +19,20 @@ import (
 type Client struct {
 	KubeconfigPath   string
 	Spoke            string
+	BinaryImage      string
+	BackupPath       string
 	KubernetesClient dynamic.Interface
 }
 
-func New(KubeconfigPath string, Spoke string) (Client, error) {
-	c := Client{KubeconfigPath, Spoke, nil}
+type BackupLiveImageSpoke struct {
+	SpokeName                string
+	LiveImageBinaryImageName string
+	LiveImageURL             string
+	RecoveryPartitionPath    string
+}
+
+func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) (Client, error) {
+	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil}
 
 	// establish kubernetes connection
 	config, err := clientcmd.BuildConfigFromFlags("", KubeconfigPath)
@@ -221,4 +234,44 @@ func (c Client) GetReleaseImage() (string, error) {
 	}
 
 	return "", nil
+}
+
+// launch the backup for the spoke cluster, for the specific image
+func (c Client) LaunchLiveImageBackup(liveImg string) error {
+	// create policy from template
+
+	var backupPolicy bytes.Buffer
+	tmpl := template.New("policyBackupLiveImageTemplate")
+	tmpl.Parse(policyBackupLiveImageTemplate)
+
+	// create a new object for live image
+	b := BackupLiveImageSpoke{c.Spoke, c.BinaryImage, liveImg, fmt.Sprintf("%s/%s", c.BackupPath, "liveImage")}
+	if err := tmpl.Execute(&backupPolicy, b); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// convert to unstructured
+	finalPolicy := &unstructured.Unstructured{}
+	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// once we have the policy, apply it
+	gvr := schema.GroupVersionResource{
+		Group:    "policy.open-cluster-management.io",
+		Version:  "v1",
+		Resource: "policies",
+	}
+
+	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	return nil
 }
