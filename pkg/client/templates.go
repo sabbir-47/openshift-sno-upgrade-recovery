@@ -24,7 +24,7 @@ metadata:
     policy.open-cluster-management.io/categories: NIST SP 800-53
     policy.open-cluster-management.io/controls: CM Configuration Management
 spec:
-  remediationAction: inform
+  remediationAction: enforce
   disabled: false
   policy-templates:
     - objectDefinition:
@@ -33,7 +33,7 @@ spec:
         metadata:
           name: backup-live-image
         spec:
-          remediationAction: inform
+          remediationAction: enforce
           severity: low
           namespaceSelector:
             exclude:
@@ -43,69 +43,61 @@ spec:
           object-templates:
             - complianceType: musthave
               objectDefinition:
+                kind: Namespace
+                apiVersion: v1
+                metadata:
+                  name: disaster-recovery
+            - complianceType: musthave
+              objectDefinition:
                 apiVersion: batch/v1
                 kind: Job
                 metadata:
                   name: backup-live-image
-                  namespace: {{ .SpokeName }}
+                  namespace: disaster-recovery
                 spec:
-                  concurrencyPolicy: Forbid
-                  jobTemplate:
-                    spec:
-                      backoffLimit: 0
-                      template:
-                        spec:						  
-                            containers:
-                              - name: backup-live-image
-                                image: {{ .LiveImageBinaryImageName }}
-                                command:
-                                - /bin/openshift-ai-image-backup
-                                - backupLiveImage
-                                - -u
-                                - {{ .LiveImageURL }}
-                                - -p
-                                - {{ .RecoveryPartitionPath }}
-                            securityContext:
-                              privileged: true
-                            terminationMessagePath: /dev/termination-log
-                            terminationMessagePolicy: FallbackToLogsOnError
-                            nodeSelector:
-                              node-role.kubernetes.io/master: ''
-                            restartPolicy: Never
-                            tolerations:
-                              - effect: NoSchedule
-                                operator: Exists
-                              - effect: NoExecute
-                                operator: Exists
-                startingDeadlineSeconds: 200
-                suspend: false
+                  parallelism: 1
+                  completions: 1
+                  backoffLimit: 5
+                  template:
+                    metadata:
+                      name: backup-live-image
+                    spec:						  
+                      containers:
+                      - name: backup-live-image
+                        image: {{ .LiveImageBinaryImageName }}
+                        command: ["/bin/openshift-ai-image-backup", "backupLiveImage", "-u", "{{ .LiveImageURL }}", "-p", "{{ .RecoveryPartitionPath }}"]
+                      nodeSelector:
+                        node-role.kubernetes.io/master: ''
+                      restartPolicy: OnFailure
 `
 
-const policySpokePlacementRule = `
+const policySpokePlacementRuleTemplate = `
 apiVersion: apps.open-cluster-management.io/v1
 kind: PlacementRule
 metadata:
   name: placement-policy-backup-spoke
+  namespace: open-cluster-management
 spec:
   clusterConditions:
   - status: "True"
     type: ManagedClusterConditionAvailable
   clusterSelector:
     matchExpressions:
-      - {key: name, operator: In, values: ["{{ .SpokeName }} "]}	  
+      - {key: name, operator: In, values: ["{{ .SpokeName }}"]}	  
 `
 
-const policyBackupLiveImagePlacementBinding = `
+const policyBackupPlacementBindingTemplate = `
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: placement-binding-live-spoke
-  placementRef:
-    name: placement-policy-backup-spoke
-    kind: PlacementRule
+  name: {{ .PlacementName }}
+  namespace: open-cluster-management
+placementRef:
+  name: placement-policy-backup-spoke
+  kind: PlacementRule
   apiGroup: apps.open-cluster-management.io
 subjects:
-- name: policy-backup-live-image
+- name: {{ .PolicyName }}
   kind: Policy
   apiGroup: policy.open-cluster-management.io
 `

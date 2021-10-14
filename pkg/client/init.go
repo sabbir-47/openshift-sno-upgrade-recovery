@@ -31,6 +31,11 @@ type BackupLiveImageSpoke struct {
 	RecoveryPartitionPath    string
 }
 
+type PlacementBinding struct {
+	PlacementName string
+	PolicyName    string
+}
+
 func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) (Client, error) {
 	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil}
 
@@ -193,7 +198,6 @@ func (c Client) GetImageFromImageSet(name string) (string, error) {
 
 	}
 	return "", err
-
 }
 
 // function to retrieve a Release Image of a given cluster
@@ -236,9 +240,48 @@ func (c Client) GetReleaseImage() (string, error) {
 	return "", nil
 }
 
+// create a generic placement binding
+func (c Client) CreatePlacementBinding(PlacementBindingName string, PlacementRuleName string) error {
+	var backupPolicy bytes.Buffer
+	tmpl := template.New("policyBackupPlacementBindingTemplate")
+	tmpl.Parse(policyBackupPlacementBindingTemplate)
+
+	// create a new object for live image
+	b := PlacementBinding{PlacementBindingName, PlacementRuleName}
+	if err := tmpl.Execute(&backupPolicy, b); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// convert to unstructured
+	finalPolicy := &unstructured.Unstructured{}
+	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// once we have the policy, apply it
+	gvr := schema.GroupVersionResource{
+		Group:    "policy.open-cluster-management.io",
+		Version:  "v1",
+		Resource: "placementbindings",
+	}
+
+	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	return nil
+}
+
 // launch the backup for the spoke cluster, for the specific image
 func (c Client) LaunchLiveImageBackup(liveImg string) error {
-	// create policy from template
+	// create placement binding in case it does not exist
+	c.CreatePlacementBinding("placement-binding-backup-live-image", "policy-backup-live-image")
 
 	var backupPolicy bytes.Buffer
 	tmpl := template.New("policyBackupLiveImageTemplate")
@@ -274,4 +317,43 @@ func (c Client) LaunchLiveImageBackup(liveImg string) error {
 	}
 
 	return nil
+}
+
+// creates a global placement rule for spoke
+func (c Client) CreatePlacementRule() error {
+	var backupPolicy bytes.Buffer
+	tmpl := template.New("policySpokePlacementRuleTemplate")
+	tmpl.Parse(policySpokePlacementRuleTemplate)
+
+	// create a new object for spoke rule
+	b := BackupLiveImageSpoke{c.Spoke, "", "", ""}
+	if err := tmpl.Execute(&backupPolicy, b); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// convert to unstructured
+	finalPolicy := &unstructured.Unstructured{}
+	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// once we have the rule, apply it
+	gvr := schema.GroupVersionResource{
+		Group:    "apps.open-cluster-management.io",
+		Version:  "v1",
+		Resource: "placementrules",
+	}
+
+	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	return nil
+
 }

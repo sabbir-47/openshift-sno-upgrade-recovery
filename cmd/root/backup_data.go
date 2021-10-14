@@ -50,6 +50,9 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 		return nil
 	}
 
+	// create placement rule for spoke if it doesn't exist
+	_ = client.CreatePlacementRule()
+
 	if liveImg != "" {
 		// create policy for backing up live image
 		_ = client.LaunchLiveImageBackup(liveImg)
