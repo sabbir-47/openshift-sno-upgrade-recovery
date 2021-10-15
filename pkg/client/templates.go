@@ -64,11 +64,21 @@ spec:
                     spec:						  
                       containers:
                       - name: backup-live-image
-                        image: {{ .LiveImageBinaryImageName }}
-                        command: ["/bin/openshift-ai-image-backup", "backupLiveImage", "-u", "{{ .LiveImageURL }}", "-p", "{{ .RecoveryPartitionPath }}"]
+                        image: {{ .ImageBinaryImageName }}
+                        args: ["backupLiveImage", "--RootFSURL", "{{ .ImageURL }}", "--BackupPath", "{{ .RecoveryPartitionPath }}/liveImage"]
+                        securityContext:
+                          privileged: true
+                        volumeMounts:
+                        - name: live-image
+                          mountPath: "{{ .RecoveryPartitionPath }}"
                       nodeSelector:
                         node-role.kubernetes.io/master: ''
                       restartPolicy: OnFailure
+                      volumes:
+                      - name: live-image
+                        hostPath:
+                          path: "{{ .RecoveryPartitionPath }}"
+                          type: Directory
 `
 
 const policySpokePlacementRuleTemplate = `
@@ -100,4 +110,72 @@ subjects:
 - name: {{ .PolicyName }}
   kind: Policy
   apiGroup: policy.open-cluster-management.io
+`
+
+const policyBackupReleaseImageTemplate = `
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: policy-backup-release-image
+  namespace: open-cluster-management
+  annotations:
+    policy.open-cluster-management.io/standards: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/categories: NIST SP 800-53
+    policy.open-cluster-management.io/controls: CM Configuration Management
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: backup-release-image
+        spec:
+          remediationAction: enforce
+          severity: low
+          namespaceSelector:
+            exclude:
+              - kube-*
+            include:
+              - {{ .SpokeName }}
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                kind: Namespace
+                apiVersion: v1
+                metadata:
+                  name: disaster-recovery
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: batch/v1
+                kind: Job
+                metadata:
+                  name: backup-release-image
+                  namespace: disaster-recovery
+                spec:
+                  parallelism: 1
+                  completions: 1
+                  backoffLimit: 5
+                  template:
+                    metadata:
+                      name: backup-release-image
+                    spec:						  
+                      containers:
+                      - name: backup-release-image
+                        image: {{ .ImageBinaryImageName }}
+                        args: ["/bin/openshift-ai-image-backup", "backupReleaseImage", "-u", "{{ .ImageURL }}", "-p", "{{ .RecoveryPartitionPath }}/releaseImage"]
+                        securityContext:
+                          privileged: true
+                        volumeMounts:
+                        - name: live-image
+                          mountPath: "{{ .RecoveryPartitionPath }}"
+                      nodeSelector:
+                        node-role.kubernetes.io/master: ''
+                      restartPolicy: OnFailure
+                      volumes:
+                      - name: live-image
+                        hostPath:
+                          path: "{{ .RecoveryPartitionPath }}"
+                          type: Directory
 `

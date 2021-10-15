@@ -68,7 +68,7 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 
 	if releaseImg != "" {
 		// create policy for backup up release image
-		//client.launchReleaseImageBackup(releaseImg)
+		client.LaunchReleaseImageBackup(releaseImg)
 	}
 
 	return nil

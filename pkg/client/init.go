@@ -24,11 +24,11 @@ type Client struct {
 	KubernetesClient dynamic.Interface
 }
 
-type BackupLiveImageSpoke struct {
-	SpokeName                string
-	LiveImageBinaryImageName string
-	LiveImageURL             string
-	RecoveryPartitionPath    string
+type BackupImageSpoke struct {
+	SpokeName             string
+	ImageBinaryImageName  string
+	ImageURL              string
+	RecoveryPartitionPath string
 }
 
 type PlacementBinding struct {
@@ -194,7 +194,10 @@ func (c Client) GetImageFromImageSet(name string) (string, error) {
 		// retrieve the images section
 		spec, _, _ := unstructured.NestedMap(foundImageset.Object, "spec")
 		release := spec["releaseImage"]
-		fmt.Println(release)
+
+		if release != nil {
+			return release.(string), nil
+		}
 
 	}
 	return "", err
@@ -288,7 +291,7 @@ func (c Client) LaunchLiveImageBackup(liveImg string) error {
 	tmpl.Parse(policyBackupLiveImageTemplate)
 
 	// create a new object for live image
-	b := BackupLiveImageSpoke{c.Spoke, c.BinaryImage, liveImg, fmt.Sprintf("%s/%s", c.BackupPath, "liveImage")}
+	b := BackupImageSpoke{c.Spoke, c.BinaryImage, liveImg, c.BackupPath}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -326,7 +329,7 @@ func (c Client) CreatePlacementRule() error {
 	tmpl.Parse(policySpokePlacementRuleTemplate)
 
 	// create a new object for spoke rule
-	b := BackupLiveImageSpoke{c.Spoke, "", "", ""}
+	b := BackupImageSpoke{c.Spoke, "", "", ""}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -356,4 +359,45 @@ func (c Client) CreatePlacementRule() error {
 
 	return nil
 
+}
+
+// launch the backup for the spoke cluster, for the specific release image
+func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
+	// create placement binding in case it does not exist
+	c.CreatePlacementBinding("placement-binding-backup-release-image", "policy-backup-release-image")
+
+	var backupPolicy bytes.Buffer
+	tmpl := template.New("policyBackupReleaseImageTemplate")
+	tmpl.Parse(policyBackupReleaseImageTemplate)
+
+	// create a new object for live image
+	b := BackupImageSpoke{c.Spoke, c.BinaryImage, releaseImg, fmt.Sprintf("%s/%s", c.BackupPath, "releaseImage")}
+	if err := tmpl.Execute(&backupPolicy, b); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// convert to unstructured
+	finalPolicy := &unstructured.Unstructured{}
+	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// once we have the policy, apply it
+	gvr := schema.GroupVersionResource{
+		Group:    "policy.open-cluster-management.io",
+		Version:  "v1",
+		Resource: "policies",
+	}
+
+	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	return nil
 }
