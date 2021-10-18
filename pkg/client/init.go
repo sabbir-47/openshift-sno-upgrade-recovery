@@ -16,6 +16,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var LIVE_POLICY string = "policy-backup-live-image"
+var RELEASE_POLICY string = "policy-backup-release-image"
+
 type Client struct {
 	KubeconfigPath   string
 	Spoke            string
@@ -26,6 +29,7 @@ type Client struct {
 
 type BackupImageSpoke struct {
 	SpokeName             string
+	PolicyName            string
 	ImageBinaryImageName  string
 	ImageURL              string
 	RecoveryPartitionPath string
@@ -284,14 +288,14 @@ func (c Client) CreatePlacementBinding(PlacementBindingName string, PlacementRul
 // launch the backup for the spoke cluster, for the specific image
 func (c Client) LaunchLiveImageBackup(liveImg string) error {
 	// create placement binding in case it does not exist
-	c.CreatePlacementBinding("placement-binding-backup-live-image", "policy-backup-live-image")
+	c.CreatePlacementBinding("placement-binding-backup-live-image", LIVE_POLICY)
 
 	var backupPolicy bytes.Buffer
 	tmpl := template.New("policyBackupLiveImageTemplate")
 	tmpl.Parse(policyBackupLiveImageTemplate)
 
 	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, c.BinaryImage, liveImg, c.BackupPath}
+	b := BackupImageSpoke{c.Spoke, LIVE_POLICY, c.BinaryImage, liveImg, c.BackupPath}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -329,7 +333,7 @@ func (c Client) CreatePlacementRule() error {
 	tmpl.Parse(policySpokePlacementRuleTemplate)
 
 	// create a new object for spoke rule
-	b := BackupImageSpoke{c.Spoke, "", "", ""}
+	b := BackupImageSpoke{c.Spoke, "", "", "", ""}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -361,17 +365,46 @@ func (c Client) CreatePlacementRule() error {
 
 }
 
+// removes all previously created resources
+func (c Client) RemovePreviousResources() error {
+	PoliciesList := []string{LIVE_POLICY, RELEASE_POLICY}
+
+	for _, policy := range PoliciesList {
+		// check if policy exists
+		gvr := schema.GroupVersionResource{
+			Group:    "policy.open-cluster-management.io",
+			Version:  "v1",
+			Resource: "policies",
+		}
+
+		resource, _ := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Get(context.Background(), policy, v1.GetOptions{})
+
+		if resource != nil {
+			// got it, remove it
+			log.Info(fmt.Sprintf("Policy %s still exists, removing it", policy))
+			err := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Delete(context.Background(), policy, v1.DeleteOptions{})
+			if err != nil {
+				return err
+			}
+
+		}
+
+	}
+	return nil
+
+}
+
 // launch the backup for the spoke cluster, for the specific release image
 func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
 	// create placement binding in case it does not exist
-	c.CreatePlacementBinding("placement-binding-backup-release-image", "policy-backup-release-image")
+	c.CreatePlacementBinding("placement-binding-backup-release-image", RELEASE_POLICY)
 
 	var backupPolicy bytes.Buffer
 	tmpl := template.New("policyBackupReleaseImageTemplate")
 	tmpl.Parse(policyBackupReleaseImageTemplate)
 
 	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, c.BinaryImage, releaseImg, fmt.Sprintf("%s/%s", c.BackupPath, "releaseImage")}
+	b := BackupImageSpoke{c.Spoke, RELEASE_POLICY, c.BinaryImage, releaseImg, c.BackupPath}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err

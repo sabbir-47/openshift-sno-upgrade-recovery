@@ -37,12 +37,6 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 		return err
 	}
 
-	// check if cluster exists and has been imported
-	if !client.SpokeClusterExists() {
-		log.Warn(fmt.Sprintf("Cluster %s does not exist", Spoke))
-		return nil
-	}
-
 	// retrieve version of the cluster, and checks for live img on the config
 	liveImg, err := client.GetRootFSUrl()
 	if err != nil {
@@ -56,6 +50,7 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 	if liveImg != "" {
 		// create policy for backing up live image
 		_ = client.LaunchLiveImageBackup(liveImg)
+
 	}
 
 	// now extract the release image
@@ -72,6 +67,28 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 	}
 
 	return nil
+}
+
+// check if a policy with the expected name is existing and remove it, and dependencies
+func removePreviousPolicies(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) error {
+	client, err := client.New(KubeconfigPath, Spoke, BinaryImage, BackupPath)
+	if err != nil {
+		return err
+	}
+
+	// check if cluster exists and has been imported
+	if !client.SpokeClusterExists() {
+		log.Warn(fmt.Sprintf("Cluster %s does not exist", Spoke))
+		return nil
+	}
+
+	err = client.RemovePreviousResources()
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }
 
 var backupInitialDataCmd = &cobra.Command{
@@ -94,8 +111,17 @@ var backupInitialDataCmd = &cobra.Command{
 		BinaryImage, _ := cmd.Flags().GetString("BinaryImage")
 		BackupPath, _ := cmd.Flags().GetString("BackupPath")
 
-		err := launchInitialBackupJobs(KubeconfigPath, Spoke, BinaryImage, BackupPath)
-		return err
+		// remove previous policies if they are already there
+		err := removePreviousPolicies(KubeconfigPath, Spoke, BinaryImage, BackupPath)
+		if err != nil {
+			return err
+		}
+
+		err = launchInitialBackupJobs(KubeconfigPath, Spoke, BinaryImage, BackupPath)
+		if err != nil {
+			return err
+		}
+		return nil
 	},
 }
 

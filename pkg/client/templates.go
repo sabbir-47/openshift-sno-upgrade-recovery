@@ -17,7 +17,7 @@ const policyBackupLiveImageTemplate = `
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: policy-backup-live-image
+  name: {{ .PolicyName }}
   namespace: open-cluster-management
   annotations:
     policy.open-cluster-management.io/standards: CM-2 Baseline Configuration
@@ -43,21 +43,33 @@ spec:
           object-templates:
             - complianceType: musthave
               objectDefinition:
-                kind: Namespace
                 apiVersion: v1
+                kind: ServiceAccount
                 metadata:
-                  name: disaster-recovery
+                  name: disaster-recovery-creator
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRoleBinding
+                metadata:
+                  name: disaster-recovery-crb
+                roleRef:
+                  name: cluster-admin
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: ClusterRole
+                subjects:
+                  - name: disaster-recovery-creator
+                    namespace: "{{ .SpokeName }}"
+                    kind: ServiceAccount                  
             - complianceType: musthave
               objectDefinition:
                 apiVersion: batch/v1
                 kind: Job
                 metadata:
                   name: backup-live-image
-                  namespace: disaster-recovery
                 spec:
-                  parallelism: 1
-                  completions: 1
                   backoffLimit: 5
+                  ttlSecondsAfterFinished: 100
                   template:
                     metadata:
                       name: backup-live-image
@@ -74,6 +86,8 @@ spec:
                       nodeSelector:
                         node-role.kubernetes.io/master: ''
                       restartPolicy: OnFailure
+                      serviceAccount: disaster-recovery-creator
+                      serviceAccountName: disaster-recovery-creator
                       volumes:
                       - name: live-image
                         hostPath:
@@ -116,7 +130,7 @@ const policyBackupReleaseImageTemplate = `
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: policy-backup-release-image
+  name: {{ .PolicyName }}
   namespace: open-cluster-management
   annotations:
     policy.open-cluster-management.io/standards: CM-2 Baseline Configuration
@@ -142,21 +156,33 @@ spec:
           object-templates:
             - complianceType: musthave
               objectDefinition:
-                kind: Namespace
                 apiVersion: v1
+                kind: ServiceAccount
                 metadata:
-                  name: disaster-recovery
+                  name: disaster-recovery-creator
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRoleBinding
+                metadata:
+                  name: disaster-recovery-crb
+                roleRef:
+                  name: cluster-admin
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: ClusterRole
+                subjects:
+                  - name: disaster-recovery-creator
+                    namespace: "{{ .SpokeName }}"
+                    kind: ServiceAccount                  
             - complianceType: musthave
               objectDefinition:
                 apiVersion: batch/v1
                 kind: Job
                 metadata:
                   name: backup-release-image
-                  namespace: disaster-recovery
                 spec:
-                  parallelism: 1
-                  completions: 1
                   backoffLimit: 5
+                  ttlSecondsAfterFinished: 100
                   template:
                     metadata:
                       name: backup-release-image
@@ -164,17 +190,19 @@ spec:
                       containers:
                       - name: backup-release-image
                         image: {{ .ImageBinaryImageName }}
-                        args: ["/bin/openshift-ai-image-backup", "backupReleaseImage", "-u", "{{ .ImageURL }}", "-p", "{{ .RecoveryPartitionPath }}/releaseImage"]
+                        args: ["backupReleaseImage", "--ReleaseImageURL", "{{ .ImageURL }}", "--BackupPath", "{{ .RecoveryPartitionPath }}/releaseImage"]
                         securityContext:
                           privileged: true
                         volumeMounts:
-                        - name: live-image
+                        - name: release-image
                           mountPath: "{{ .RecoveryPartitionPath }}"
                       nodeSelector:
                         node-role.kubernetes.io/master: ''
                       restartPolicy: OnFailure
+                      serviceAccount: disaster-recovery-creator
+                      serviceAccountName: disaster-recovery-creator
                       volumes:
-                      - name: live-image
+                      - name: release-image
                         hostPath:
                           path: "{{ .RecoveryPartitionPath }}"
                           type: Directory
