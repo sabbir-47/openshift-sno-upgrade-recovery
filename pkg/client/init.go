@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
+	"time"
 
 	"text/template"
 
@@ -33,6 +35,7 @@ type BackupImageSpoke struct {
 	ImageBinaryImageName  string
 	ImageURL              string
 	RecoveryPartitionPath string
+	RandomId              string
 }
 
 type PlacementBinding struct {
@@ -40,7 +43,18 @@ type PlacementBinding struct {
 	PolicyName    string
 }
 
+func RandomString(n int) string {
+	var letters = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
+
+	s := make([]rune, n)
+	for i := range s {
+		s[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(s)
+}
+
 func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) (Client, error) {
+	rand.Seed(time.Now().UnixNano())
 	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil}
 
 	// establish kubernetes connection
@@ -295,7 +309,7 @@ func (c Client) LaunchLiveImageBackup(liveImg string) error {
 	tmpl.Parse(policyBackupLiveImageTemplate)
 
 	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, LIVE_POLICY, c.BinaryImage, liveImg, c.BackupPath}
+	b := BackupImageSpoke{c.Spoke, LIVE_POLICY, c.BinaryImage, liveImg, c.BackupPath, RandomString(4)}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -333,7 +347,7 @@ func (c Client) CreatePlacementRule() error {
 	tmpl.Parse(policySpokePlacementRuleTemplate)
 
 	// create a new object for spoke rule
-	b := BackupImageSpoke{c.Spoke, "", "", "", ""}
+	b := BackupImageSpoke{c.Spoke, "", "", "", "", ""}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -380,13 +394,12 @@ func (c Client) RemovePreviousResources() error {
 		resource, _ := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Get(context.Background(), policy, v1.GetOptions{})
 
 		if resource != nil {
-			// got it, remove it
+			// remove policy
 			log.Info(fmt.Sprintf("Policy %s still exists, removing it", policy))
 			err := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Delete(context.Background(), policy, v1.DeleteOptions{})
 			if err != nil {
 				return err
 			}
-
 		}
 
 	}
@@ -404,7 +417,7 @@ func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
 	tmpl.Parse(policyBackupReleaseImageTemplate)
 
 	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, RELEASE_POLICY, c.BinaryImage, releaseImg, c.BackupPath}
+	b := BackupImageSpoke{c.Spoke, RELEASE_POLICY, c.BinaryImage, releaseImg, c.BackupPath, RandomString(4)}
 	if err := tmpl.Execute(&backupPolicy, b); err != nil {
 		log.Error(err)
 		return err
@@ -432,5 +445,23 @@ func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
 		return err
 	}
 
+	return nil
+}
+
+// waits until policies are completed, and clean resources
+func (c Client) WaitForCompletion() error {
+	/*dynInformer := dynamicinformer.NewDynamicSharedInformerFactory(c.KubernetesClient, 0)
+	informer := dynInformer.ForResource(monboDBResource).Informer()
+	stopper := make(chan struct{})
+
+	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		DeleteFunc: func(obj interface{}) {
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err == nil {
+				queue.Add(key)
+			}
+		},
+	})*/
 	return nil
 }

@@ -66,7 +66,7 @@ spec:
                 apiVersion: batch/v1
                 kind: Job
                 metadata:
-                  name: backup-live-image
+                  name: backup-live-image-{{ .RandomId }}
                 spec:
                   backoffLimit: 5
                   ttlSecondsAfterFinished: 100
@@ -93,6 +93,25 @@ spec:
                         hostPath:
                           path: "{{ .RecoveryPartitionPath }}"
                           type: Directory
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-live-image-job-status
+        spec:
+          remediationAction: inform
+          severity: low
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: batch/v1
+                kind: Job
+                metadata:
+                  name: backup-live-image-{{ .RandomId }}
+                  namespace: {{ .SpokeName }}
+                status:
+                  conditions:
+                    - type: Complete                  
 `
 
 const policySpokePlacementRuleTemplate = `
@@ -179,7 +198,7 @@ spec:
                 apiVersion: batch/v1
                 kind: Job
                 metadata:
-                  name: backup-release-image
+                  name: backup-release-image-{{ .RandomId }}
                 spec:
                   backoffLimit: 5
                   ttlSecondsAfterFinished: 100
@@ -206,4 +225,23 @@ spec:
                         hostPath:
                           path: "{{ .RecoveryPartitionPath }}"
                           type: Directory
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-release-image-job-status
+        spec:
+          remediationAction: inform
+          severity: low
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: batch/v1
+                kind: Job
+                metadata:
+                  name: backup-release-image-{{ .RandomId }}
+                  namespace: {{ .SpokeName }}
+                status:
+                  conditions:
+                    - type: Complete                  
 `

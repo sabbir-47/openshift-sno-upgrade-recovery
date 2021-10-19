@@ -31,12 +31,7 @@ import (
 // it will connect to kubernetes and retrieve the live image
 // and release image needed to back up in the spoke cluster
 // it will create policies triggering jobs on the spoke
-func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) error {
-	client, err := client.New(KubeconfigPath, Spoke, BinaryImage, BackupPath)
-	if err != nil {
-		return err
-	}
-
+func launchInitialBackupJobs(client client.Client, Spoke string, BinaryImage string, BackupPath string) error {
 	// retrieve version of the cluster, and checks for live img on the config
 	liveImg, err := client.GetRootFSUrl()
 	if err != nil {
@@ -66,23 +61,20 @@ func launchInitialBackupJobs(KubeconfigPath string, Spoke string, BinaryImage st
 		client.LaunchReleaseImageBackup(releaseImg)
 	}
 
+	client.WaitForCompletion()
+
 	return nil
 }
 
 // check if a policy with the expected name is existing and remove it, and dependencies
-func removePreviousPolicies(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) error {
-	client, err := client.New(KubeconfigPath, Spoke, BinaryImage, BackupPath)
-	if err != nil {
-		return err
-	}
-
+func removePreviousPolicies(client client.Client, Spoke string, BinaryImage string, BackupPath string) error {
 	// check if cluster exists and has been imported
 	if !client.SpokeClusterExists() {
 		log.Warn(fmt.Sprintf("Cluster %s does not exist", Spoke))
 		return nil
 	}
 
-	err = client.RemovePreviousResources()
+	err := client.RemovePreviousResources()
 	if err != nil {
 		return err
 	}
@@ -111,16 +103,22 @@ var backupInitialDataCmd = &cobra.Command{
 		BinaryImage, _ := cmd.Flags().GetString("BinaryImage")
 		BackupPath, _ := cmd.Flags().GetString("BackupPath")
 
-		// remove previous policies if they are already there
-		err := removePreviousPolicies(KubeconfigPath, Spoke, BinaryImage, BackupPath)
+		client, err := client.New(KubeconfigPath, Spoke, BinaryImage, BackupPath)
 		if err != nil {
 			return err
 		}
 
-		err = launchInitialBackupJobs(KubeconfigPath, Spoke, BinaryImage, BackupPath)
+		// remove previous policies if they are already there
+		err = removePreviousPolicies(client, Spoke, BinaryImage, BackupPath)
 		if err != nil {
 			return err
 		}
+
+		err = launchInitialBackupJobs(client, Spoke, BinaryImage, BackupPath)
+		if err != nil {
+			return err
+		}
+
 		return nil
 	},
 }
