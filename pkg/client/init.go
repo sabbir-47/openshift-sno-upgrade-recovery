@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"text/template"
@@ -20,6 +21,7 @@ import (
 
 var LIVE_POLICY string = "policy-backup-live-image"
 var RELEASE_POLICY string = "policy-backup-release-image"
+var NAMESPACE = "open-cluster-management"
 
 type Client struct {
 	KubeconfigPath   string
@@ -290,7 +292,7 @@ func (c Client) CreatePlacementBinding(PlacementBindingName string, PlacementRul
 		Resource: "placementbindings",
 	}
 
-	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
 	if err != nil {
 		log.Error(err)
 		return err
@@ -331,7 +333,7 @@ func (c Client) LaunchLiveImageBackup(liveImg string) error {
 		Resource: "policies",
 	}
 
-	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
 	if err != nil {
 		log.Error(err)
 		return err
@@ -369,14 +371,13 @@ func (c Client) CreatePlacementRule() error {
 		Resource: "placementrules",
 	}
 
-	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
 	if err != nil {
 		log.Error(err)
 		return err
 	}
 
 	return nil
-
 }
 
 // removes all previously created resources
@@ -391,12 +392,12 @@ func (c Client) RemovePreviousResources() error {
 			Resource: "policies",
 		}
 
-		resource, _ := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Get(context.Background(), policy, v1.GetOptions{})
+		resource, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), policy, v1.GetOptions{})
 
 		if resource != nil {
 			// remove policy
 			log.Info(fmt.Sprintf("Policy %s still exists, removing it", policy))
-			err := c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Delete(context.Background(), policy, v1.DeleteOptions{})
+			err := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), policy, v1.DeleteOptions{})
 			if err != nil {
 				return err
 			}
@@ -439,7 +440,7 @@ func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
 		Resource: "policies",
 	}
 
-	_, err = c.KubernetesClient.Resource(gvr).Namespace("open-cluster-management").Create(context.Background(), finalPolicy, v1.CreateOptions{})
+	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
 	if err != nil {
 		log.Error(err)
 		return err
@@ -448,20 +449,68 @@ func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
 	return nil
 }
 
+// checks if the expected policies are already removed
+func (c Client) NoPoliciesExist() bool {
+	gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
+
+	live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
+	release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
+
+	return (live != nil && release != nil)
+
+}
+
 // waits until policies are completed, and clean resources
 func (c Client) WaitForCompletion() error {
-	/*dynInformer := dynamicinformer.NewDynamicSharedInformerFactory(c.KubernetesClient, 0)
-	informer := dynInformer.ForResource(monboDBResource).Informer()
-	stopper := make(chan struct{})
+	ticker := time.NewTicker(time.Second * 10).C
+	for {
+		select {
+		case <-ticker:
+			gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
 
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		DeleteFunc: func(obj interface{}) {
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
-				queue.Add(key)
+			live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
+			release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
+
+			if live == nil && release == nil {
+				// no policies there, we are fine to go
+				return nil
 			}
-		},
-	})*/
+
+			// check status of each policy and remove if compliant
+			statusLive, _, _ := unstructured.NestedMap(live.Object, "status")
+			if statusLive["compliant"] == "Compliant" {
+				c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), LIVE_POLICY, v1.DeleteOptions{})
+			}
+			statusRelease, _, _ := unstructured.NestedMap(release.Object, "status")
+			if statusRelease["compliant"] == "Compliant" {
+				c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), RELEASE_POLICY, v1.DeleteOptions{})
+			}
+		}
+	}
+
+}
+
+// checks if we have desired policy, and it's compliant. Remove it is done
+func (c Client) RemoveCompletedPolicy(obj *unstructured.Unstructured) error {
+	metadata, _, _ := unstructured.NestedMap(obj.Object, "metadata")
+	var policyResource = schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
+
+	name := metadata["name"].(string)
+	namespace := metadata["namespace"].(string)
+
+	if (name == "open-cluster-management.policy-backup-release-image" || name == "open-cluster-management.policy-backup-live-image") && namespace == c.Spoke {
+		// need to check status
+		status, _, _ := unstructured.NestedMap(obj.Object, "status")
+		if status["compliant"] == "Compliant" {
+			// remove parent policy
+			parentName := strings.Split(name, ".")[1]
+			err := c.KubernetesClient.Resource(policyResource).Namespace(NAMESPACE).Delete(context.Background(), parentName, v1.DeleteOptions{})
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+
+		}
+	}
 	return nil
 }
