@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 var LIVE_POLICY string = "policy-backup-live-image"
 var RELEASE_POLICY string = "policy-backup-release-image"
 var NAMESPACE = "open-cluster-management"
+var RETRY_PERIOD_SECONDS = 10
+var TIMEOUT_MINUTES = 15
 
 type Client struct {
 	KubeconfigPath   string
@@ -462,9 +465,16 @@ func (c Client) NoPoliciesExist() bool {
 
 // waits until policies are completed, and clean resources
 func (c Client) WaitForCompletion() error {
-	ticker := time.NewTicker(time.Second * 10).C
+	ticker := time.NewTicker(time.Second * time.Duration(RETRY_PERIOD_SECONDS)).C
+	timeout := time.After(time.Minute * time.Duration(TIMEOUT_MINUTES))
+
 	for {
 		select {
+		case <-timeout:
+			// exit with timeout
+			log.Error("Exited with timeout")
+			os.Exit(1)
+
 		case <-ticker:
 			gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
 
@@ -485,6 +495,7 @@ func (c Client) WaitForCompletion() error {
 			if statusRelease["compliant"] == "Compliant" {
 				c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), RELEASE_POLICY, v1.DeleteOptions{})
 			}
+
 		}
 	}
 
