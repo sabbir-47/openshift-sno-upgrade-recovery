@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"time"
 
 	"text/template"
@@ -28,11 +27,13 @@ var RETRY_PERIOD_SECONDS = 10
 var TIMEOUT_MINUTES = 15
 
 type Client struct {
-	KubeconfigPath   string
-	Spoke            string
-	BinaryImage      string
-	BackupPath       string
-	KubernetesClient dynamic.Interface
+	KubeconfigPath        string
+	Spoke                 string
+	BinaryImage           string
+	BackupPath            string
+	KubernetesClient      dynamic.Interface
+	CurrentLiveVersion    string
+	CurrentReleaseVersion string
 }
 
 type BackupImageSpoke struct {
@@ -61,7 +62,7 @@ func RandomString(n int) string {
 
 func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) (Client, error) {
 	rand.Seed(time.Now().UnixNano())
-	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil}
+	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil, "", ""}
 
 	var clientset dynamic.Interface
 
@@ -482,6 +483,44 @@ func (c Client) NoPoliciesExist() bool {
 
 }
 
+// checks status of policies and deletes if completed
+func (c *Client) MonitorPolicies() bool {
+	gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
+
+	live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
+	release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
+
+	if live == nil && release == nil {
+		// no policies there, we are fine to go
+		log.Info("All policies have been reconciled")
+		return true
+	}
+
+	// check resource version
+	liveVersion, _, _ := unstructured.NestedMap(live.Object, "metadata")
+	if c.CurrentLiveVersion == "" {
+		c.CurrentLiveVersion = liveVersion["resourceVersion"].(string)
+	}
+	releaseVersion, _, _ := unstructured.NestedMap(release.Object, "metadata")
+	if c.CurrentReleaseVersion == "" {
+		c.CurrentReleaseVersion = releaseVersion["resourceVersion"].(string)
+	}
+
+	// check status of each policy and remove if compliant , and has been refreshed
+	statusLive, _, _ := unstructured.NestedMap(live.Object, "status")
+	if statusLive["compliant"] == "Compliant" && c.CurrentLiveVersion != liveVersion["resourceVersion"].(string) {
+		log.Info(fmt.Sprintf("Policy %s has reconciled, deleting it", LIVE_POLICY))
+		c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), LIVE_POLICY, v1.DeleteOptions{})
+	}
+	statusRelease, _, _ := unstructured.NestedMap(release.Object, "status")
+	if statusRelease["compliant"] == "Compliant" && c.CurrentReleaseVersion != releaseVersion["resourceVersion"].(string) {
+		log.Info(fmt.Sprintf("Policy %s has reconciled, deleting it", RELEASE_POLICY))
+		c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), RELEASE_POLICY, v1.DeleteOptions{})
+	}
+
+	return false
+}
+
 // waits until policies are completed, and clean resources
 func (c Client) WaitForCompletion() error {
 	ticker := time.NewTicker(time.Second * time.Duration(RETRY_PERIOD_SECONDS)).C
@@ -495,52 +534,10 @@ func (c Client) WaitForCompletion() error {
 			os.Exit(1)
 
 		case <-ticker:
-			gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
-
-			live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
-			release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
-
-			if live == nil && release == nil {
-				// no policies there, we are fine to go
+			if c.MonitorPolicies() {
 				return nil
 			}
-
-			// check status of each policy and remove if compliant
-			statusLive, _, _ := unstructured.NestedMap(live.Object, "status")
-			if statusLive["compliant"] == "Compliant" {
-				c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), LIVE_POLICY, v1.DeleteOptions{})
-			}
-			statusRelease, _, _ := unstructured.NestedMap(release.Object, "status")
-			if statusRelease["compliant"] == "Compliant" {
-				c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), RELEASE_POLICY, v1.DeleteOptions{})
-			}
-
 		}
 	}
 
-}
-
-// checks if we have desired policy, and it's compliant. Remove it is done
-func (c Client) RemoveCompletedPolicy(obj *unstructured.Unstructured) error {
-	metadata, _, _ := unstructured.NestedMap(obj.Object, "metadata")
-	var policyResource = schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
-
-	name := metadata["name"].(string)
-	namespace := metadata["namespace"].(string)
-
-	if (name == "open-cluster-management.policy-backup-release-image" || name == "open-cluster-management.policy-backup-live-image") && namespace == c.Spoke {
-		// need to check status
-		status, _, _ := unstructured.NestedMap(obj.Object, "status")
-		if status["compliant"] == "Compliant" {
-			// remove parent policy
-			parentName := strings.Split(name, ".")[1]
-			err := c.KubernetesClient.Resource(policyResource).Namespace(NAMESPACE).Delete(context.Background(), parentName, v1.DeleteOptions{})
-			if err != nil {
-				log.Error(err)
-				return err
-			}
-
-		}
-	}
-	return nil
 }
