@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -62,19 +63,37 @@ func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath str
 	rand.Seed(time.Now().UnixNano())
 	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil}
 
-	// establish kubernetes connection
-	config, err := clientcmd.BuildConfigFromFlags("", KubeconfigPath)
-	if err != nil {
-		log.Error(err)
-		return c, err
+	var clientset dynamic.Interface
+
+	if KubeconfigPath != "" {
+		// generate config from file
+		config, err := clientcmd.BuildConfigFromFlags("", KubeconfigPath)
+		if err != nil {
+			log.Error(err)
+			return c, err
+		}
+		// now try to connect to cluster
+		clientset, err = dynamic.NewForConfig(config)
+		if err != nil {
+			log.Error(err)
+			return c, err
+		}
+
+	} else {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			log.Error(err)
+			return c, err
+		}
+
+		// now try to connect to cluster
+		clientset, err = dynamic.NewForConfig(config)
+		if err != nil {
+			log.Error(err)
+			return c, err
+		}
 	}
 
-	// now try to connect to cluster
-	clientset, err := dynamic.NewForConfig(config)
-	if err != nil {
-		log.Error(err)
-		return c, err
-	}
 	c.KubernetesClient = clientset
 
 	return c, nil

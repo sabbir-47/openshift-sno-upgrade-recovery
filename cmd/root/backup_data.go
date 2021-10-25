@@ -90,10 +90,12 @@ var backupInitialDataCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		KubeconfigPath, _ := cmd.Flags().GetString("KubeconfigPath")
 
-		// validate that file exists
-		if _, err := os.Stat(KubeconfigPath); os.IsNotExist(err) {
-			log.Error(err)
-			return err
+		if KubeconfigPath != "" {
+			// validate that file exists
+			if _, err := os.Stat(KubeconfigPath); os.IsNotExist(err) {
+				log.Error(err)
+				return err
+			}
 		}
 
 		// get spoke cluster
@@ -128,7 +130,6 @@ func init() {
 	rootCmd.AddCommand(backupInitialDataCmd)
 
 	backupInitialDataCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
-	backupInitialDataCmd.MarkFlagRequired("KubeconfigPath")
 
 	backupInitialDataCmd.Flags().StringP("Spoke", "s", "", "Path to the spoke cluster")
 	backupInitialDataCmd.MarkFlagRequired("Spoke")
