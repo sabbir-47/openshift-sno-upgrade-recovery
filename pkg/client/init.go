@@ -5,70 +5,66 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
+	"strings"
 	"time"
 
 	"text/template"
 
 	log "github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
+	"k8s.io/client-go/discovery"
+	memory "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-var LIVE_POLICY string = "policy-backup-live-image"
-var RELEASE_POLICY string = "policy-backup-release-image"
-var NAMESPACE = "open-cluster-management"
-var RETRY_PERIOD_SECONDS = 10
-var TIMEOUT_MINUTES = 15
-
 type Client struct {
-	KubeconfigPath        string
-	Spoke                 string
-	BinaryImage           string
-	BackupPath            string
-	KubernetesClient      dynamic.Interface
-	CurrentLiveVersion    string
-	CurrentReleaseVersion string
+	Spoke            string
+	BackupPath       string
+	KubeconfigPath   string
+	KubernetesClient dynamic.Interface
 }
 
-type BackupImageSpoke struct {
-	SpokeName             string
-	PolicyName            string
-	ImageBinaryImageName  string
-	ImageURL              string
-	RecoveryPartitionPath string
-	RandomId              string
+type TemplateData struct {
+	ResourceName string
+	ClusterName  string
+	RecoveryPath string
 }
 
-type PlacementBinding struct {
-	PlacementName string
-	PolicyName    string
+// ResourceTemplate define a resource template structure
+type ResourceTemplate struct {
+	// Must always correspond the Action or View resource name
+	resourceName string
+	template     string
 }
 
-func RandomString(n int) string {
-	var letters = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
-
-	s := make([]rune, n)
-	for i := range s {
-		s[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(s)
+var BackupCreateTemplates = []ResourceTemplate{
+	{"backup-create-namespace", mngClusterActCreateNS},
+	{"backup-create-serviceaccount", mngClusterActCreateSA},
+	{"backup-create-rolebinding", mngClusterActCreateRB},
+	{"backup-create-job", mngClusterActCreateJob},
+	{"backup-create-clusterview", mngClusterViewJob},
 }
 
-func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath string) (Client, error) {
+var JobDeleteTemplates = []ResourceTemplate{
+	{"backup-delete-ns", mngClusterActDeleteNS},
+}
+
+func New(Spoke string, BackupPath string, KubeconfigPath string) (Client, error) {
 	rand.Seed(time.Now().UnixNano())
-	c := Client{KubeconfigPath, Spoke, BinaryImage, BackupPath, nil, "", ""}
+	c := Client{Spoke, BackupPath, KubeconfigPath, nil}
 
 	var clientset dynamic.Interface
 
 	if KubeconfigPath != "" {
 		// generate config from file
-		config, err := clientcmd.BuildConfigFromFlags("", KubeconfigPath)
+		config, err := c.GetConfig()
 		if err != nil {
 			log.Error(err)
 			return c, err
@@ -78,8 +74,8 @@ func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath str
 		if err != nil {
 			log.Error(err)
 			return c, err
-		}
 
+		}
 	} else {
 		config, err := rest.InClusterConfig()
 		if err != nil {
@@ -94,13 +90,13 @@ func New(KubeconfigPath string, Spoke string, BinaryImage string, BackupPath str
 			return c, err
 		}
 	}
-
 	c.KubernetesClient = clientset
 
 	return c, nil
 }
 
 func (c Client) SpokeClusterExists() bool {
+
 	// using client, get if spoke cluster with given name exists
 	gvr := schema.GroupVersionResource{
 		Group:    "cluster.open-cluster-management.io",
@@ -108,6 +104,7 @@ func (c Client) SpokeClusterExists() bool {
 		Resource: "managedclusters",
 	}
 
+	log.Info(fmt.Sprintf("Checking if the Spoke cluster: %s exist...", c.Spoke))
 	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), c.Spoke, v1.GetOptions{})
 
 	if err != nil {
@@ -117,7 +114,11 @@ func (c Client) SpokeClusterExists() bool {
 
 	// transform to typed
 	if foundSpokeCluster != nil {
-		status, _, _ := unstructured.NestedMap(foundSpokeCluster.Object, "status")
+		status, _, err := unstructured.NestedMap(foundSpokeCluster.Object, "status")
+		if err != nil {
+			log.Error(err)
+			return false
+		}
 		if status != nil {
 			if conditions, ok := status["conditions"]; ok {
 				// check for condition
@@ -135,409 +136,390 @@ func (c Client) SpokeClusterExists() bool {
 		}
 
 	}
+	log.Info(fmt.Sprintf("VERIFIED: Spoke cluster: %s exists", c.Spoke))
 	return false
 }
 
-// given a version, retrieves the matching rootfs
-func (c Client) GetRootFsFromVersion(version string) (string, error) {
-	gvr := schema.GroupVersionResource{
-		Group:    "agent-install.openshift.io",
-		Version:  "v1beta1",
-		Resource: "agentserviceconfigs",
-	}
-
-	foundConfig, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), "agent", v1.GetOptions{})
-
+func (c Client) GetConfig() (*rest.Config, error) {
+	config, err := clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
 	if err != nil {
 		log.Error(err)
-		return "", err
+		return nil, err
+	}
+	return config, nil
+}
+
+func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cluster string) error {
+
+	//	config := ctrl.GetConfigOrDie()
+	//	dynamic := dynamic.NewForConfigOrDie(config)
+	config, err := c.GetConfig()
+	if err != nil {
+		log.Error(err)
+		return err
 	}
 
-	if foundConfig != nil {
-		// retrieve the images section
-		spec, _, _ := unstructured.NestedMap(foundConfig.Object, "spec")
-		images := spec["osImages"]
+	newdata := TemplateData{
+		ResourceName: "",
+		ClusterName:  c.Spoke,
+		RecoveryPath: c.BackupPath,
+	}
 
-		// iterate over images until we find the matching version
-		for _, v := range images.([]interface{}) {
-			key := v.(map[string]interface{})["openshiftVersion"]
-			if key == version {
-				val := v.(map[string]interface{})["rootFSUrl"].(string)
-				return val, nil
-			}
+	var templates []ResourceTemplate
+
+	if cluster == "spoke" {
+		templates = JobDeleteTemplates
+	} else {
+		templates = BackupCreateTemplates
+	}
+
+	for _, item := range templates {
+		obj := &unstructured.Unstructured{}
+		newdata.ResourceName = item.resourceName
+
+		log.Info("\n\n")
+		log.Info(strings.Repeat("-", 60))
+		log.Info(fmt.Printf("####### Creating kubernetes object: [ %s ]", item.resourceName))
+		log.Info(strings.Repeat("-", 60))
+		log.Info("\n\n")
+
+		log.Info(fmt.Printf("rendering resource: %s, data passed: %s\n", item.resourceName, newdata))
+		w, err := c.renderYamlTemplate(item.resourceName, item.template, newdata)
+		if err != nil && !errors.IsAlreadyExists(err) {
+			return err
+		}
+		log.Info("Retreiving GVK....")
+		// decode YAML into unstructured.Unstructured
+		dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+		_, gvk, err := dec.Decode(w.Bytes(), nil, obj)
+		if err != nil {
+			return err
 		}
 
-	}
-	return "", err
-}
+		log.Info(fmt.Printf("Retrieved GVK: %s\n", gvk))
 
-// function to retrieve the openshift version and retrieve rootfs
-func (c Client) GetRootFSUrl() (string, error) {
-	// retrieve clusterdeployment for that spoke
-	gvr := schema.GroupVersionResource{
-		Group:    "hive.openshift.io",
-		Version:  "v1",
-		Resource: "clusterdeployments",
-	}
+		log.Info("Mapping gvk to gvr with discovery client....")
 
-	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), c.Spoke, v1.GetOptions{})
-
-	if err != nil {
-		log.Error(err)
-		return "", err
-	}
-
-	// transform to typed and retrieve version
-	version := ""
-	if foundSpokeCluster != nil {
-		metadata, _, _ := unstructured.NestedMap(foundSpokeCluster.Object, "metadata")
-		labels := metadata["labels"].(map[string]interface{})
-
-		// check the label that starts with matching pattern
-		for k, v := range labels {
-			if k == "hive.openshift.io/version-major-minor" {
-				// we have the version
-				version = v.(string)
-				break
-			}
+		// Map GVK to GVR with discovery client
+		discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+		if err != nil {
+			return err
+		}
+		mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			return err
 		}
 
-		if version != "" {
-			// we have version, let's extract rootfs
-			rootfs, err := c.GetRootFsFromVersion(version)
-
-			if err != nil {
-				return "", err
-			}
-
-			return rootfs, nil
+		log.Info("Mapping has been successfully done")
+		// Build resource
+		resource := schema.GroupVersionResource{
+			Group:    gvk.Group,
+			Version:  gvk.Version,
+			Resource: mapping.Resource.Resource,
 		}
 
-	}
-	return "", nil
-
-}
-
-// function to query an imageset and return the image
-func (c Client) GetImageFromImageSet(name string) (string, error) {
-	gvr := schema.GroupVersionResource{
-		Group:    "hive.openshift.io",
-		Version:  "v1",
-		Resource: "clusterimagesets",
-	}
-
-	foundImageset, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), name, v1.GetOptions{})
-
-	if err != nil {
-		log.Error(err)
-		return "", err
-	}
-
-	if foundImageset != nil {
-		// retrieve the images section
-		spec, _, _ := unstructured.NestedMap(foundImageset.Object, "spec")
-		release := spec["releaseImage"]
-
-		if release != nil {
-			return release.(string), nil
-		}
-
-	}
-	return "", err
-}
-
-// function to retrieve a Release Image of a given cluster
-func (c Client) GetReleaseImage() (string, error) {
-	// retrieve agentclusterinstall for that spoke
-	gvr := schema.GroupVersionResource{
-		Group:    "extensions.hive.openshift.io",
-		Version:  "v1beta1",
-		Resource: "agentclusterinstalls",
-	}
-
-	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), c.Spoke, v1.GetOptions{})
-
-	if err != nil {
-		log.Error(err)
-		return "", err
-	}
-
-	// transform to typed and retrieve version
-	if foundSpokeCluster != nil {
-		spec, _, _ := unstructured.NestedMap(foundSpokeCluster.Object, "spec")
-		imageSetRef := spec["imageSetRef"].(map[string]interface{})
-
-		if imageSetRef != nil {
-			clusterImageSetName := imageSetRef["name"].(string)
-			if clusterImageSetName != "" {
-				// need to retrieve url from imageset
-				releaseImage, err := c.GetImageFromImageSet(clusterImageSetName)
-
-				if err != nil {
-					log.Error(err)
-					return "", err
-				}
-
-				return releaseImage, nil
-			}
-		}
-	}
-
-	return "", nil
-}
-
-// create a generic placement binding
-func (c Client) CreatePlacementBinding(PlacementBindingName string, PlacementRuleName string) error {
-	var backupPolicy bytes.Buffer
-	tmpl := template.New("policyBackupPlacementBindingTemplate")
-	tmpl.Parse(policyBackupPlacementBindingTemplate)
-
-	// create a new object for live image
-	b := PlacementBinding{PlacementBindingName, PlacementRuleName}
-	if err := tmpl.Execute(&backupPolicy, b); err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// convert to unstructured
-	finalPolicy := &unstructured.Unstructured{}
-	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// once we have the policy, apply it
-	gvr := schema.GroupVersionResource{
-		Group:    "policy.open-cluster-management.io",
-		Version:  "v1",
-		Resource: "placementbindings",
-	}
-
-	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	return nil
-}
-
-// launch the backup for the spoke cluster, for the specific image
-func (c Client) LaunchLiveImageBackup(liveImg string) error {
-	// create placement binding in case it does not exist
-	c.CreatePlacementBinding("placement-binding-backup-live-image", LIVE_POLICY)
-
-	var backupPolicy bytes.Buffer
-	tmpl := template.New("policyBackupLiveImageTemplate")
-	tmpl.Parse(policyBackupLiveImageTemplate)
-
-	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, LIVE_POLICY, c.BinaryImage, liveImg, c.BackupPath, RandomString(4)}
-	if err := tmpl.Execute(&backupPolicy, b); err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// convert to unstructured
-	finalPolicy := &unstructured.Unstructured{}
-	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// once we have the policy, apply it
-	gvr := schema.GroupVersionResource{
-		Group:    "policy.open-cluster-management.io",
-		Version:  "v1",
-		Resource: "policies",
-	}
-
-	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	return nil
-}
-
-// creates a global placement rule for spoke
-func (c Client) CreatePlacementRule() error {
-	var backupPolicy bytes.Buffer
-	tmpl := template.New("policySpokePlacementRuleTemplate")
-	tmpl.Parse(policySpokePlacementRuleTemplate)
-
-	// create a new object for spoke rule
-	b := BackupImageSpoke{c.Spoke, "", "", "", "", ""}
-	if err := tmpl.Execute(&backupPolicy, b); err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// convert to unstructured
-	finalPolicy := &unstructured.Unstructured{}
-	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// once we have the rule, apply it
-	gvr := schema.GroupVersionResource{
-		Group:    "apps.open-cluster-management.io",
-		Version:  "v1",
-		Resource: "placementrules",
-	}
-
-	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	return nil
-}
-
-// removes all previously created resources
-func (c Client) RemovePreviousResources() error {
-	PoliciesList := []string{LIVE_POLICY, RELEASE_POLICY}
-
-	for _, policy := range PoliciesList {
-		// check if policy exists
-		gvr := schema.GroupVersionResource{
-			Group:    "policy.open-cluster-management.io",
-			Version:  "v1",
-			Resource: "policies",
-		}
-
-		resource, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), policy, v1.GetOptions{})
-
-		if resource != nil {
-			// remove policy
-			log.Info(fmt.Sprintf("Policy %s still exists, removing it", policy))
-			err := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), policy, v1.DeleteOptions{})
-			if err != nil {
-				return err
-			}
-		}
-
-	}
-	return nil
-
-}
-
-// launch the backup for the spoke cluster, for the specific release image
-func (c Client) LaunchReleaseImageBackup(releaseImg string) error {
-	// create placement binding in case it does not exist
-	c.CreatePlacementBinding("placement-binding-backup-release-image", RELEASE_POLICY)
-
-	var backupPolicy bytes.Buffer
-	tmpl := template.New("policyBackupReleaseImageTemplate")
-	tmpl.Parse(policyBackupReleaseImageTemplate)
-
-	// create a new object for live image
-	b := BackupImageSpoke{c.Spoke, RELEASE_POLICY, c.BinaryImage, releaseImg, c.BackupPath, RandomString(4)}
-	if err := tmpl.Execute(&backupPolicy, b); err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// convert to unstructured
-	finalPolicy := &unstructured.Unstructured{}
-	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	_, _, err := dec.Decode(backupPolicy.Bytes(), nil, finalPolicy)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	// once we have the policy, apply it
-	gvr := schema.GroupVersionResource{
-		Group:    "policy.open-cluster-management.io",
-		Version:  "v1",
-		Resource: "policies",
-	}
-
-	_, err = c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Create(context.Background(), finalPolicy, v1.CreateOptions{})
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-
-	return nil
-}
-
-// checks if the expected policies are already removed
-func (c Client) NoPoliciesExist() bool {
-	gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
-
-	live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
-	release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
-
-	return (live != nil && release != nil)
-
-}
-
-// checks status of policies and deletes if completed
-func (c *Client) MonitorPolicies() bool {
-	gvr := schema.GroupVersionResource{Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies"}
-
-	live, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), LIVE_POLICY, v1.GetOptions{})
-	release, _ := c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Get(context.Background(), RELEASE_POLICY, v1.GetOptions{})
-
-	if live == nil && release == nil {
-		// no policies there, we are fine to go
-		log.Info("All policies have been reconciled")
-		return true
-	}
-
-	// check resource version
-	liveVersion, _, _ := unstructured.NestedMap(live.Object, "metadata")
-	if c.CurrentLiveVersion == "" {
-		c.CurrentLiveVersion = liveVersion["resourceVersion"].(string)
-	}
-	releaseVersion, _, _ := unstructured.NestedMap(release.Object, "metadata")
-	if c.CurrentReleaseVersion == "" {
-		c.CurrentReleaseVersion = releaseVersion["resourceVersion"].(string)
-	}
-
-	// check status of each policy and remove if compliant , and has been refreshed
-	statusLive, _, _ := unstructured.NestedMap(live.Object, "status")
-	if statusLive["compliant"] == "Compliant" && c.CurrentLiveVersion != liveVersion["resourceVersion"].(string) {
-		log.Info(fmt.Sprintf("Policy %s has reconciled, deleting it", LIVE_POLICY))
-		c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), LIVE_POLICY, v1.DeleteOptions{})
-	}
-	statusRelease, _, _ := unstructured.NestedMap(release.Object, "status")
-	if statusRelease["compliant"] == "Compliant" && c.CurrentReleaseVersion != releaseVersion["resourceVersion"].(string) {
-		log.Info(fmt.Sprintf("Policy %s has reconciled, deleting it", RELEASE_POLICY))
-		c.KubernetesClient.Resource(gvr).Namespace(NAMESPACE).Delete(context.Background(), RELEASE_POLICY, v1.DeleteOptions{})
-	}
-
-	return false
-}
-
-// waits until policies are completed, and clean resources
-func (c Client) WaitForCompletion() error {
-	ticker := time.NewTicker(time.Second * time.Duration(RETRY_PERIOD_SECONDS)).C
-	timeout := time.After(time.Minute * time.Duration(TIMEOUT_MINUTES))
-
-	for {
-		select {
-		case <-timeout:
-			// exit with timeout
-			log.Error("Exited with timeout")
-			os.Exit(1)
-
-		case <-ticker:
-			if c.MonitorPolicies() {
+		switch action {
+		case "delete":
+			log.Info(fmt.Printf("DELETING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....\n", item.resourceName, c.Spoke))
+			if err := c.DeleteKubernetesObjects(resource, item.resourceName); err != nil {
+				log.Errorf("Couldn't remove object: [%s], err: [%s]", item.resourceName, err)
 				return nil
 			}
+		case "create":
+			log.Info(fmt.Printf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....\n", item.resourceName, c.Spoke))
+			err = c.CreateKubernetesObjects(obj, resource)
+			if err != nil {
+				log.Error(err)
+				return err
+			}
+			log.Info("\n\n")
+			log.Info(strings.Repeat("-", 60))
+			log.Info(fmt.Printf("################# Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ....\n\n", item.resourceName, c.Spoke))
+			log.Info(strings.Repeat("-", 60))
+			log.Info("\n\n")
+		default:
+			log.Errorf("No condition matched")
+			return err
+
 		}
+
+	}
+	return nil
+}
+
+func (c Client) renderYamlTemplate(resourceName string, TemplateData string, data TemplateData) (*bytes.Buffer, error) {
+
+	w := new(bytes.Buffer)
+
+	log.Info(fmt.Printf("Parsing template: %s", resourceName))
+
+	tmpl, err := template.New(resourceName).Parse(commonTemplates + TemplateData)
+	if err != nil {
+		return w, fmt.Errorf("failed to parse template %s: %v", resourceName, err)
+	}
+	data.ResourceName = resourceName
+	err = tmpl.Execute(w, data)
+	if err != nil {
+		return w, fmt.Errorf("failed to render template %s: %v", resourceName, err)
+	}
+	log.Info(fmt.Printf("Successfully parsed template: %s", resourceName))
+	return w, nil
+}
+
+func (c Client) CreateKubernetesObjects(obj *unstructured.Unstructured, resource schema.GroupVersionResource) error {
+
+	_, err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Create(context.Background(), obj, v1.CreateOptions{})
+	if err != nil {
+		log.Info(fmt.Printf("err is : %s", err))
+		return err
+	}
+	return nil
+}
+
+func (c Client) ListMCAobjects() error {
+
+	gvr := schema.GroupVersionResource{
+		Group:    "action.open-cluster-management.io",
+		Version:  "v1beta1",
+		Resource: "managedclusteractions",
 	}
 
+	resource, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).List(context.Background(), v1.ListOptions{})
+	if err != nil {
+		log.Info(fmt.Printf("err is : %s", err))
+		return nil
+	}
+	log.Info("\n\n")
+	log.Info(strings.Repeat("-", 60))
+	log.Info(fmt.Printf("List of mca \n %s", resource.Object))
+	log.Info(strings.Repeat("-", 60))
+	return nil
 }
+
+func (c Client) ManageView(action string) (*unstructured.Unstructured, error) {
+
+	gvr := schema.GroupVersionResource{
+		Group:    "view.open-cluster-management.io",
+		Version:  "v1beta1",
+		Resource: "managedclusterviews",
+	}
+
+	name := "backup-create-clusterview"
+	var view *unstructured.Unstructured
+
+	switch action {
+	case "list":
+		view, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), name, v1.GetOptions{})
+		if err != nil {
+			log.Info(fmt.Printf("err is : %s", err))
+			return view, err
+		}
+		return view, nil
+	case "delete":
+		err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
+		if err != nil {
+			log.Info(fmt.Printf("err is : %s", err))
+			return nil, err
+		}
+		log.Info(fmt.Printf("----------------- Successfully deleted the managedclusterview resource named: [%s] ---------------", name))
+	default:
+		log.Errorf("No condition matched")
+		return nil, fmt.Errorf("no condition matched")
+	}
+	return view, nil
+}
+
+func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
+	var status, message string
+	for _, condition := range viewConditions {
+		status = condition.(map[string]interface{})["status"].(string)
+		message = condition.(map[string]interface{})["type"].(string)
+		log.Info(fmt.Printf("job status from mcv status: [%s], message: [%s]", status, message))
+	}
+	return status
+}
+
+func (c Client) CheckStatus() error {
+
+	// this is static for now, it should be parametrized.
+	for i := 0; i < 10; i++ {
+
+		time.Sleep(5 * time.Second)
+		log.Info(".... checking if managedclusterview related to job is present .....")
+
+		clusterView, err := c.ManageView("list")
+		if err != nil {
+			log.Errorf("Couldn't find managedclusterview from %s cluster; err: %s", c.Spoke, err)
+			return err
+		}
+		log.Info("Found managedclusterview object")
+
+		conditions, exists, err := unstructured.NestedSlice(clusterView.Object, "status", "conditions")
+		if err != nil {
+			log.Error(err)
+			return err
+		}
+
+		if !exists {
+			return fmt.Errorf("couldn't find the structure")
+		}
+		value := c.CheckViewProcessing(conditions)
+		log.Info(fmt.Printf("value is %s", value))
+		if value == "True" {
+			break
+		}
+
+	}
+	log.Info(".... out of the loop .....")
+	return nil
+}
+
+func (c Client) DeleteKubernetesObjects(resource schema.GroupVersionResource, name string) error {
+
+	// we dont need resource going forward, since it queries and do rest mapping from gvk to gvr, it creates cpu and memory load to the server.
+	// we can loop through resource template and delte by resource type.
+	err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
+	if err != nil {
+		log.Info(fmt.Printf("err is : %s", err))
+		//	return err
+	}
+	return nil
+}
+
+func (c Client) DeleteSpokeJob(resource schema.GroupVersionResource, name string) error {
+
+	// we dont need resource going forward, since it queries and do rest mapping from gvk to gvr, it creates cpu and memory load to the server.
+	// we can loop through resource template and delte by resource type.
+	err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
+	if err != nil {
+		log.Info(fmt.Printf("err is : %s", err))
+		//	return err
+	}
+	return nil
+}
+
+const commonTemplates string = `
+{{ define "actionGVK" }}
+apiVersion: action.open-cluster-management.io/v1beta1
+kind: ManagedClusterAction
+{{ end }}
+{{ define "viewGVK" }}
+apiVersion: view.open-cluster-management.io/v1beta1
+kind: ManagedClusterView
+{{ end }}
+{{ define "metadata"}}
+metadata:
+  name: {{ .ResourceName }}
+  namespace: {{ .ClusterName }}
+{{ end }}
+`
+const mngClusterActCreateNS = `
+{{ template "actionGVK"}}
+{{ template "metadata" . }}
+spec: 
+  actionType: Create
+  kube: 
+    resource: namespace
+    template: 
+      apiVersion: v1
+      kind: Namespace
+      metadata: 
+        name: backupresource
+`
+const mngClusterActCreateSA = `
+{{ template "actionGVK"}}
+{{ template "metadata" . }}
+spec:
+  actionType: Create
+  kube:
+    resource: serviceaccount
+    template:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: backupresource
+        namespace: backupresource
+`
+const mngClusterActCreateRB = `
+{{ template "actionGVK"}}
+{{ template "metadata" . }}
+spec:
+  actionType: Create
+  kube:
+    resource: clusterrolebinding
+    template:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: backupResource
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+        - kind: ServiceAccount
+          name: backupresource
+          namespace: backupresource
+`
+const mngClusterActCreateJob string = `
+{{ template "actionGVK"}}
+{{ template "metadata" . }}
+spec:
+  actionType: Create
+  kube:
+    namespace: backupresource
+    resource: job
+    template:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: backupresource
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            containers:
+              -
+                args:
+                  - launchBackup
+                  - "--BackupPath"
+                  - /var/recovery
+                image: 2620-52-0-1302--b88f.sslip.io:5000/olm/openshift-ai-image-backup:latest
+                name: container-image
+                securityContext:
+                  privileged: true
+                  runAsUser: 0
+                tty: true
+                volumeMounts:
+                  -
+                    mountPath: /host
+                    name: backup
+            restartPolicy: Never
+            hostNetwork: true
+            serviceAccountName: backupresource
+            volumes:
+              -
+                hostPath:
+                  path: /
+                  type: Directory
+                name: backup
+`
+const mngClusterActDeleteNS string = `
+{{ template "actionGVK"}}
+{{ template "metadata" . }}
+spec: 
+  actionType: Delete
+  kube: 
+    name: backupresource
+    resource: namespace
+`
+const mngClusterViewJob string = `
+{{ template "viewGVK"}}
+{{ template "metadata" . }}
+spec:
+  scope:
+    resource: jobs
+    name: backupresource
+    namespace: backupresource
+`
