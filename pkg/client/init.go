@@ -24,6 +24,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var (
+	MCA = "managedclusteractions"
+	MCV = "managedclusterviews"
+)
+
 type Client struct {
 	Spoke            string
 	BackupPath       string
@@ -40,18 +45,20 @@ type TemplateData struct {
 // ResourceTemplate define a resource template structure
 type ResourceTemplate struct {
 	// Must always correspond the Action or View resource name
-	resourceName string
-	template     string
+	ResourceName string
+	Template     string
 }
 
-var BackupCreateTemplates = []ResourceTemplate{
+var ActionCreateTemplates = []ResourceTemplate{
 	{"backup-create-namespace", mngClusterActCreateNS},
 	{"backup-create-serviceaccount", mngClusterActCreateSA},
 	{"backup-create-rolebinding", mngClusterActCreateRB},
 	{"backup-create-job", mngClusterActCreateJob},
-	{"backup-create-clusterview", mngClusterViewJob},
 }
 
+var ViewCreateTemplates = []ResourceTemplate{
+	{"backup-create-clusterview", mngClusterViewJob},
+}
 var JobDeleteTemplates = []ResourceTemplate{
 	{"backup-delete-ns", mngClusterActDeleteNS},
 }
@@ -104,7 +111,7 @@ func (c Client) SpokeClusterExists() bool {
 		Resource: "managedclusters",
 	}
 
-	log.Info(fmt.Sprintf("Checking if the Spoke cluster: %s exist...", c.Spoke))
+	log.WithFields(log.Fields{"SpokeStatus": "Checking"}).Debugf("Checking if the Spoke cluster: %s exist...", c.Spoke)
 	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), c.Spoke, v1.GetOptions{})
 
 	if err != nil {
@@ -136,7 +143,7 @@ func (c Client) SpokeClusterExists() bool {
 		}
 
 	}
-	log.Info(fmt.Sprintf("VERIFIED: Spoke cluster: %s exists", c.Spoke))
+	log.WithFields(log.Fields{"SpokeStatus": "Found"}).Infof("Spoke cluster: %s exists", c.Spoke)
 	return false
 }
 
@@ -149,10 +156,8 @@ func (c Client) GetConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cluster string) error {
+func (c Client) LaunchKubernetesObjects(template []ResourceTemplate, action string) error {
 
-	//	config := ctrl.GetConfigOrDie()
-	//	dynamic := dynamic.NewForConfigOrDie(config)
 	config, err := c.GetConfig()
 	if err != nil {
 		log.Error(err)
@@ -165,30 +170,20 @@ func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cl
 		RecoveryPath: c.BackupPath,
 	}
 
-	var templates []ResourceTemplate
-
-	if cluster == "spoke" {
-		templates = JobDeleteTemplates
-	} else {
-		templates = BackupCreateTemplates
-	}
-
-	for _, item := range templates {
+	for _, item := range template {
 		obj := &unstructured.Unstructured{}
-		newdata.ResourceName = item.resourceName
+		newdata.ResourceName = item.ResourceName
 
-		log.Info("\n\n")
-		log.Info(strings.Repeat("-", 60))
-		log.Info(fmt.Printf("####### Creating kubernetes object: [ %s ]", item.resourceName))
-		log.Info(strings.Repeat("-", 60))
-		log.Info("\n\n")
+		log.Debug(strings.Repeat("-", 60))
+		log.Debugf("####### Creating kubernetes object: [ %s ] #######", item.ResourceName)
+		log.Debug(strings.Repeat("-", 60))
 
-		log.Info(fmt.Printf("rendering resource: %s, data passed: %s\n", item.resourceName, newdata))
-		w, err := c.renderYamlTemplate(item.resourceName, item.template, newdata)
+		log.Debugf("rendering resource: %s, data passed: %s", item.ResourceName, newdata)
+		w, err := c.renderYamlTemplate(item.ResourceName, item.Template, newdata)
 		if err != nil && !errors.IsAlreadyExists(err) {
 			return err
 		}
-		log.Info("Retreiving GVK....")
+		log.Debug("Retreiving GVK....")
 		// decode YAML into unstructured.Unstructured
 		dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 		_, gvk, err := dec.Decode(w.Bytes(), nil, obj)
@@ -196,9 +191,9 @@ func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cl
 			return err
 		}
 
-		log.Info(fmt.Printf("Retrieved GVK: %s\n", gvk))
+		log.Debugf("Retrieved GVK: %s", gvk)
 
-		log.Info("Mapping gvk to gvr with discovery client....")
+		log.Debug("Mapping gvk to gvr with discovery client....")
 
 		// Map GVK to GVR with discovery client
 		discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
@@ -211,7 +206,7 @@ func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cl
 			return err
 		}
 
-		log.Info("Mapping has been successfully done")
+		log.Debug("Mapping has been successfully done")
 		// Build resource
 		resource := schema.GroupVersionResource{
 			Group:    gvk.Group,
@@ -219,30 +214,16 @@ func (c Client) LaunchKubernetesObjects(KubeconfigPath string, action string, cl
 			Resource: mapping.Resource.Resource,
 		}
 
-		switch action {
-		case "delete":
-			log.Info(fmt.Printf("DELETING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....\n", item.resourceName, c.Spoke))
-			if err := c.DeleteKubernetesObjects(resource, item.resourceName); err != nil {
-				log.Errorf("Couldn't remove object: [%s], err: [%s]", item.resourceName, err)
-				return nil
-			}
-		case "create":
-			log.Info(fmt.Printf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....\n", item.resourceName, c.Spoke))
-			err = c.CreateKubernetesObjects(obj, resource)
-			if err != nil {
-				log.Error(err)
-				return err
-			}
-			log.Info("\n\n")
-			log.Info(strings.Repeat("-", 60))
-			log.Info(fmt.Printf("################# Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ....\n\n", item.resourceName, c.Spoke))
-			log.Info(strings.Repeat("-", 60))
-			log.Info("\n\n")
-		default:
-			log.Errorf("No condition matched")
+		log.Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, c.Spoke)
+		err = c.CreateKubernetesObjects(obj, resource)
+		if err != nil {
+			log.Error(err)
 			return err
-
 		}
+
+		log.Debug(strings.Repeat("-", 60))
+		log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, c.Spoke)
+		log.Debug(strings.Repeat("-", 60))
 
 	}
 	return nil
@@ -252,7 +233,7 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 
 	w := new(bytes.Buffer)
 
-	log.Info(fmt.Printf("Parsing template: %s", resourceName))
+	log.Debugf("Parsing template: %s", resourceName)
 
 	tmpl, err := template.New(resourceName).Parse(commonTemplates + TemplateData)
 	if err != nil {
@@ -263,7 +244,7 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 	if err != nil {
 		return w, fmt.Errorf("failed to render template %s: %v", resourceName, err)
 	}
-	log.Info(fmt.Printf("Successfully parsed template: %s", resourceName))
+	log.Debugf("Successfully parsed template: %s", resourceName)
 	return w, nil
 }
 
@@ -271,255 +252,88 @@ func (c Client) CreateKubernetesObjects(obj *unstructured.Unstructured, resource
 
 	_, err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Create(context.Background(), obj, v1.CreateOptions{})
 	if err != nil {
-		log.Info(fmt.Printf("err is : %s", err))
+		log.Debugf("err is : %s", err)
 		return err
 	}
 	return nil
 }
 
-func (c Client) ListMCAobjects() error {
-
-	gvr := schema.GroupVersionResource{
-		Group:    "action.open-cluster-management.io",
-		Version:  "v1beta1",
-		Resource: "managedclusteractions",
-	}
-
-	resource, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).List(context.Background(), v1.ListOptions{})
-	if err != nil {
-		log.Info(fmt.Printf("err is : %s", err))
-		return nil
-	}
-	log.Info("\n\n")
-	log.Info(strings.Repeat("-", 60))
-	log.Info(fmt.Printf("List of mca \n %s", resource.Object))
-	log.Info(strings.Repeat("-", 60))
-	return nil
-}
-
-func (c Client) ManageView(action string) (*unstructured.Unstructured, error) {
+func (c Client) ManageObjects(template []ResourceTemplate, resourceType string, action string) (*unstructured.Unstructured, error) {
 
 	gvr := schema.GroupVersionResource{
 		Group:    "view.open-cluster-management.io",
 		Version:  "v1beta1",
-		Resource: "managedclusterviews",
+		Resource: resourceType,
 	}
 
-	name := "backup-create-clusterview"
 	var view *unstructured.Unstructured
 
-	switch action {
-	case "list":
-		view, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), name, v1.GetOptions{})
-		if err != nil {
-			log.Info(fmt.Printf("err is : %s", err))
-			return view, err
+	for _, items := range template {
+		switch action {
+		case "get":
+			view, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), items.ResourceName, v1.GetOptions{})
+			if err != nil {
+				return view, err
+			}
+			return view, nil
+
+		case "delete":
+			err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Delete(context.Background(), items.ResourceName, v1.DeleteOptions{})
+			if err != nil {
+				return nil, err
+			}
+			log.Debugf("####### Successfully deleted the %s resource named: [%s] #######", resourceType, items.ResourceName)
+
+		default:
+			return nil, fmt.Errorf("no condition matched")
 		}
-		return view, nil
-	case "delete":
-		err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
-		if err != nil {
-			log.Info(fmt.Printf("err is : %s", err))
-			return nil, err
-		}
-		log.Info(fmt.Printf("----------------- Successfully deleted the managedclusterview resource named: [%s] ---------------", name))
-	default:
-		log.Errorf("No condition matched")
-		return nil, fmt.Errorf("no condition matched")
 	}
 	return view, nil
 }
 
 func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
+	// probably it is better to check if the result field is not empty and  status and type
+	// need to verify
 	var status, message string
 	for _, condition := range viewConditions {
 		status = condition.(map[string]interface{})["status"].(string)
-		message = condition.(map[string]interface{})["type"].(string)
-		log.Info(fmt.Printf("job status from mcv status: [%s], message: [%s]", status, message))
+		message = condition.(map[string]interface{})["message"].(string)
+		log.Debugf("job status from mcv status: [%s], message: [%s]", status, message)
 	}
 	return status
 }
 
-func (c Client) CheckStatus() error {
+func (c Client) CheckStatus(resourceType string) error {
 
 	// this is static for now, it should be parametrized.
 	for i := 0; i < 10; i++ {
 
-		time.Sleep(5 * time.Second)
-		log.Info(".... checking if managedclusterview related to job is present .....")
+		time.Sleep(1 * time.Second)
+		log.Debug("####### Checking if managedclusterview related to job is present #######")
 
-		clusterView, err := c.ManageView("list")
+		clusterView, err := c.ManageObjects(ViewCreateTemplates, resourceType, "get")
 		if err != nil {
 			log.Errorf("Couldn't find managedclusterview from %s cluster; err: %s", c.Spoke, err)
 			return err
 		}
-		log.Info("Found managedclusterview object")
+		log.Debug("Found managedclusterview object")
 
 		conditions, exists, err := unstructured.NestedSlice(clusterView.Object, "status", "conditions")
 		if err != nil {
 			log.Error(err)
 			return err
 		}
-
+		log.Debugf("conditions: %s", conditions)
 		if !exists {
-			return fmt.Errorf("couldn't find the structure")
+			return fmt.Errorf("couldn't find the intended structure")
 		}
 		value := c.CheckViewProcessing(conditions)
-		log.Info(fmt.Printf("value is %s", value))
+		log.Debugf("value is %s", value)
 		if value == "True" {
 			break
 		}
 
 	}
-	log.Info(".... out of the loop .....")
+	log.Debug("####### out of the loop #######")
 	return nil
 }
-
-func (c Client) DeleteKubernetesObjects(resource schema.GroupVersionResource, name string) error {
-
-	// we dont need resource going forward, since it queries and do rest mapping from gvk to gvr, it creates cpu and memory load to the server.
-	// we can loop through resource template and delte by resource type.
-	err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
-	if err != nil {
-		log.Info(fmt.Printf("err is : %s", err))
-		//	return err
-	}
-	return nil
-}
-
-func (c Client) DeleteSpokeJob(resource schema.GroupVersionResource, name string) error {
-
-	// we dont need resource going forward, since it queries and do rest mapping from gvk to gvr, it creates cpu and memory load to the server.
-	// we can loop through resource template and delte by resource type.
-	err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Delete(context.Background(), name, v1.DeleteOptions{})
-	if err != nil {
-		log.Info(fmt.Printf("err is : %s", err))
-		//	return err
-	}
-	return nil
-}
-
-const commonTemplates string = `
-{{ define "actionGVK" }}
-apiVersion: action.open-cluster-management.io/v1beta1
-kind: ManagedClusterAction
-{{ end }}
-{{ define "viewGVK" }}
-apiVersion: view.open-cluster-management.io/v1beta1
-kind: ManagedClusterView
-{{ end }}
-{{ define "metadata"}}
-metadata:
-  name: {{ .ResourceName }}
-  namespace: {{ .ClusterName }}
-{{ end }}
-`
-const mngClusterActCreateNS = `
-{{ template "actionGVK"}}
-{{ template "metadata" . }}
-spec: 
-  actionType: Create
-  kube: 
-    resource: namespace
-    template: 
-      apiVersion: v1
-      kind: Namespace
-      metadata: 
-        name: backupresource
-`
-const mngClusterActCreateSA = `
-{{ template "actionGVK"}}
-{{ template "metadata" . }}
-spec:
-  actionType: Create
-  kube:
-    resource: serviceaccount
-    template:
-      apiVersion: v1
-      kind: ServiceAccount
-      metadata:
-        name: backupresource
-        namespace: backupresource
-`
-const mngClusterActCreateRB = `
-{{ template "actionGVK"}}
-{{ template "metadata" . }}
-spec:
-  actionType: Create
-  kube:
-    resource: clusterrolebinding
-    template:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: backupResource
-      roleRef:
-        apiGroup: rbac.authorization.k8s.io
-        kind: ClusterRole
-        name: cluster-admin
-      subjects:
-        - kind: ServiceAccount
-          name: backupresource
-          namespace: backupresource
-`
-const mngClusterActCreateJob string = `
-{{ template "actionGVK"}}
-{{ template "metadata" . }}
-spec:
-  actionType: Create
-  kube:
-    namespace: backupresource
-    resource: job
-    template:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: backupresource
-      spec:
-        backoffLimit: 0
-        template:
-          spec:
-            containers:
-              -
-                args:
-                  - launchBackup
-                  - "--BackupPath"
-                  - /var/recovery
-                image: 2620-52-0-1302--b88f.sslip.io:5000/olm/openshift-ai-image-backup:latest
-                name: container-image
-                securityContext:
-                  privileged: true
-                  runAsUser: 0
-                tty: true
-                volumeMounts:
-                  -
-                    mountPath: /host
-                    name: backup
-            restartPolicy: Never
-            hostNetwork: true
-            serviceAccountName: backupresource
-            volumes:
-              -
-                hostPath:
-                  path: /
-                  type: Directory
-                name: backup
-`
-const mngClusterActDeleteNS string = `
-{{ template "actionGVK"}}
-{{ template "metadata" . }}
-spec: 
-  actionType: Delete
-  kube: 
-    name: backupresource
-    resource: namespace
-`
-const mngClusterViewJob string = `
-{{ template "viewGVK"}}
-{{ template "metadata" . }}
-spec:
-  scope:
-    resource: jobs
-    name: backupresource
-    namespace: backupresource
-`
