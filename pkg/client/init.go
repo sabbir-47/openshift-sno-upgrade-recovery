@@ -25,12 +25,16 @@ import (
 )
 
 var (
-	MCA = "managedclusteractions"
-	MCV = "managedclusterviews"
+	MCA    = "managedclusteractions"
+	MCV    = "managedclusterviews"
+	Failed = "FAILED"
+	Done   = "DONE"
+	NExist = "NON-EXISTENT"
+	NErr   = "NO ERROR"
 )
 
 type Client struct {
-	Spoke            string
+	Spoke            []string
 	BackupPath       string
 	KubeconfigPath   string
 	KubernetesClient dynamic.Interface
@@ -63,7 +67,7 @@ var JobDeleteTemplates = []ResourceTemplate{
 	{"backup-delete-ns", mngClusterActDeleteNS},
 }
 
-func New(Spoke string, BackupPath string, KubeconfigPath string) (Client, error) {
+func New(Spoke []string, BackupPath string, KubeconfigPath string) (Client, error) {
 	rand.Seed(time.Now().UnixNano())
 	c := Client{Spoke, BackupPath, KubeconfigPath, nil}
 
@@ -102,7 +106,7 @@ func New(Spoke string, BackupPath string, KubeconfigPath string) (Client, error)
 	return c, nil
 }
 
-func (c Client) SpokeClusterExists() bool {
+func (c Client) SpokeClusterExists(name string) bool {
 
 	// using client, get if spoke cluster with given name exists
 	gvr := schema.GroupVersionResource{
@@ -112,7 +116,7 @@ func (c Client) SpokeClusterExists() bool {
 	}
 
 	log.WithFields(log.Fields{"SpokeStatus": "Checking"}).Debugf("Checking if the Spoke cluster: %s exist...", c.Spoke)
-	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), c.Spoke, v1.GetOptions{})
+	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), name, v1.GetOptions{})
 
 	if err != nil {
 		log.Error(err)
@@ -156,7 +160,7 @@ func (c Client) GetConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func (c Client) LaunchKubernetesObjects(template []ResourceTemplate, action string) error {
+func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceTemplate, action string) error {
 
 	config, err := c.GetConfig()
 	if err != nil {
@@ -166,7 +170,7 @@ func (c Client) LaunchKubernetesObjects(template []ResourceTemplate, action stri
 
 	newdata := TemplateData{
 		ResourceName: "",
-		ClusterName:  c.Spoke,
+		ClusterName:  clusterName,
 		RecoveryPath: c.BackupPath,
 	}
 
@@ -178,7 +182,7 @@ func (c Client) LaunchKubernetesObjects(template []ResourceTemplate, action stri
 		log.Debugf("####### Creating kubernetes object: [ %s ] #######", item.ResourceName)
 		log.Debug(strings.Repeat("-", 60))
 
-		log.Debugf("rendering resource: %s, data passed: %s", item.ResourceName, newdata)
+		log.Debugf("rendering resource: %s, data passed: %s for cluster: %s", item.ResourceName, newdata, clusterName)
 		w, err := c.renderYamlTemplate(item.ResourceName, item.Template, newdata)
 		if err != nil && !errors.IsAlreadyExists(err) {
 			return err
@@ -214,15 +218,15 @@ func (c Client) LaunchKubernetesObjects(template []ResourceTemplate, action stri
 			Resource: mapping.Resource.Resource,
 		}
 
-		log.Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, c.Spoke)
-		err = c.CreateKubernetesObjects(obj, resource)
+		log.Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, clusterName)
+		err = c.CreateKubernetesObjects(clusterName, obj, resource)
 		if err != nil {
 			log.Error(err)
 			return err
 		}
 
 		log.Debug(strings.Repeat("-", 60))
-		log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, c.Spoke)
+		log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
 		log.Debug(strings.Repeat("-", 60))
 
 	}
@@ -248,9 +252,9 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 	return w, nil
 }
 
-func (c Client) CreateKubernetesObjects(obj *unstructured.Unstructured, resource schema.GroupVersionResource) error {
+func (c Client) CreateKubernetesObjects(clusterName string, obj *unstructured.Unstructured, resource schema.GroupVersionResource) error {
 
-	_, err := c.KubernetesClient.Resource(resource).Namespace(c.Spoke).Create(context.Background(), obj, v1.CreateOptions{})
+	_, err := c.KubernetesClient.Resource(resource).Namespace(clusterName).Create(context.Background(), obj, v1.CreateOptions{})
 	if err != nil {
 		log.Debugf("err is : %s", err)
 		return err
@@ -258,7 +262,7 @@ func (c Client) CreateKubernetesObjects(obj *unstructured.Unstructured, resource
 	return nil
 }
 
-func (c Client) ManageObjects(template []ResourceTemplate, resourceType string, action string) (*unstructured.Unstructured, error) {
+func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, resourceType string, action string) (*unstructured.Unstructured, error) {
 
 	gvr := schema.GroupVersionResource{
 		Group:    "view.open-cluster-management.io",
@@ -271,18 +275,18 @@ func (c Client) ManageObjects(template []ResourceTemplate, resourceType string, 
 	for _, items := range template {
 		switch action {
 		case "get":
-			view, err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Get(context.Background(), items.ResourceName, v1.GetOptions{})
+			view, err := c.KubernetesClient.Resource(gvr).Namespace(clusterName).Get(context.Background(), items.ResourceName, v1.GetOptions{})
 			if err != nil {
 				return view, err
 			}
 			return view, nil
 
 		case "delete":
-			err := c.KubernetesClient.Resource(gvr).Namespace(c.Spoke).Delete(context.Background(), items.ResourceName, v1.DeleteOptions{})
+			err := c.KubernetesClient.Resource(gvr).Namespace(clusterName).Delete(context.Background(), items.ResourceName, v1.DeleteOptions{})
 			if err != nil {
 				return nil, err
 			}
-			log.Debugf("####### Successfully deleted the %s resource named: [%s] #######", resourceType, items.ResourceName)
+			log.Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
 
 		default:
 			return nil, fmt.Errorf("no condition matched")
@@ -303,7 +307,7 @@ func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
 	return status
 }
 
-func (c Client) CheckStatus(resourceType string) error {
+func (c Client) CheckStatus(resourceType string, clusterName string) error {
 
 	// this is static for now, it should be parametrized.
 	for i := 0; i < 10; i++ {
@@ -311,7 +315,7 @@ func (c Client) CheckStatus(resourceType string) error {
 		time.Sleep(1 * time.Second)
 		log.Debug("####### Checking if managedclusterview related to job is present #######")
 
-		clusterView, err := c.ManageObjects(ViewCreateTemplates, resourceType, "get")
+		clusterView, err := c.ManageObjects(clusterName, ViewCreateTemplates, resourceType, "get")
 		if err != nil {
 			log.Errorf("Couldn't find managedclusterview from %s cluster; err: %s", c.Spoke, err)
 			return err

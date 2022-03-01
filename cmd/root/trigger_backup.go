@@ -16,6 +16,9 @@ limitations under the License.
 package root
 
 import (
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	metaclient1 "github.com/redhat-ztp/openshift-ai-trigger-backup/pkg/client"
@@ -28,6 +31,123 @@ import (
 	//"strings"
 )
 
+type Status struct {
+	ClusterName   string
+	ClusterStatus string
+	ClusterError  interface{}
+}
+
+func multiSpokeLaunch(client metaclient1.Client) error {
+	status := []Status{}
+	var mu sync.Mutex
+	ch := make(chan string, len(client.Spoke))
+	var wg sync.WaitGroup
+	for _, v := range client.Spoke {
+		wg.Add(1)
+		go func(client metaclient1.Client, v string, ch chan string, wg *sync.WaitGroup) {
+			retStatus, err := f1(client, v, ch, wg)
+			mu.Lock()
+			if err != nil {
+				status = append(status, Status{v, retStatus, err})
+			} else {
+				status = append(status, Status{v, retStatus, metaclient1.NErr})
+			}
+			fmt.Printf("The value received from chan: %s is %s and %s\n", v, retStatus, err)
+			mu.Unlock()
+		}(client, v, ch, &wg)
+	}
+	wg.Wait()
+	close(ch)
+	for _, v := range status {
+		fmt.Printf("##Name: %s ###Cluster Status: %s ### Error: %s \n", v.ClusterName, v.ClusterStatus, v.ClusterError)
+	}
+	return nil
+}
+
+func f1(client metaclient1.Client, name string, ch chan string, wg *sync.WaitGroup) (string, error) {
+
+	defer wg.Done()
+
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetLevel(log.DebugLevel)
+	// check whether the spoke exists
+	if !client.SpokeClusterExists(name) {
+		return metaclient1.NExist, fmt.Errorf("cluster %s does not exist", name)
+
+	}
+	log.Info("Cluster exists!")
+	time.Sleep(time.Second * 2)
+
+	log.Info("Creating Kubernetes objects")
+
+	// TO DO:
+	// 1. If client can't create any object it should delete all the created object - done
+	// 2. Query with a function if the k8s job is succesfully finished.
+	// 3. Once done, we must cleanup artifacts at spoke.
+
+	// Launch k8s job, if it fails to launch it must delete the objects it created.
+
+	err := client.LaunchKubernetesObjects(name, metaclient1.ActionCreateTemplates, "create")
+	if err != nil {
+		log.Errorf("Couldn't launch k8s ManagedClusterAction objects in the %s cluster err: %s", name, err)
+		log.Info("Deleting all mca objects")
+		if _, err = client.ManageObjects(name, metaclient1.ActionCreateTemplates, metaclient1.MCA, "delete"); err != nil {
+			return metaclient1.Failed, fmt.Errorf("couldn't delete k8s ManagedClusterAction objects in the %s cluster err: %s", name, err)
+			//	return err
+		}
+		return name, err
+	}
+	log.Info("Successfully created all K8s mca objects")
+
+	// create managedclusterview object
+	_, err = client.ManageObjects(name, metaclient1.ViewCreateTemplates, metaclient1.MCV, "get")
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			_, err = client.ManageObjects(name, metaclient1.ViewCreateTemplates, metaclient1.MCV, "delete")
+			if err != nil {
+				return metaclient1.Failed, fmt.Errorf("couldn't delete existing ManagedclusterView object in the %s cluster err: %s", name, err)
+				//	return err
+			}
+		}
+		if errors.IsNotFound(err) {
+			err = client.LaunchKubernetesObjects(name, metaclient1.ViewCreateTemplates, "create")
+			if err != nil {
+				return metaclient1.Failed, fmt.Errorf("couldn't launch k8s ManagedclusterView object the %s cluster err: %s", name, err)
+				//	return err
+			}
+		}
+	}
+	log.Info("Successfully created ManagedclusterView object")
+
+	time.Sleep(1 * time.Second)
+	// check job status via managedclusterview
+	err = client.CheckStatus(metaclient1.MCV, name)
+	if err != nil {
+		return metaclient1.Failed, fmt.Errorf("couldn't verify the job status, err: %s", err)
+		//return nil
+	}
+	time.Sleep(1 * time.Second)
+
+	// delete managedclusterview
+	_, err = client.ManageObjects(name, metaclient1.ViewCreateTemplates, metaclient1.MCV, "delete")
+	if err != nil {
+		return metaclient1.Failed, fmt.Errorf("couldn't delete existing ManagedclusterView object in the %s cluster err: %s", name, err)
+		//	return err
+	}
+
+	time.Sleep(1 * time.Second)
+	//delete the namespace in the spoke, which will delete the completed job and associated pod.
+	err = client.LaunchKubernetesObjects(name, metaclient1.JobDeleteTemplates, "create")
+	if err != nil {
+		return metaclient1.Failed, fmt.Errorf("couldn't launch k8 objects in the %s cluster err: %s", name, err)
+		//	return err
+	}
+	log.Info("Successfully deleted all Kubernetes objects")
+
+	return metaclient1.Done, nil
+}
+
+/*
 func launchBackupJobs(client metaclient1.Client) error {
 
 	log.SetFormatter(&log.JSONFormatter{})
@@ -50,10 +170,10 @@ func launchBackupJobs(client metaclient1.Client) error {
 
 	err := client.LaunchKubernetesObjects(metaclient1.ActionCreateTemplates, "create")
 	if err != nil {
-		log.Errorf("Couldn't launch k8s ManagedClusterAction objects in the %s cluster err: %s", client.Spoke, err)
+		log.Errorf("Couldn't launch k8s ManagedClusterAction objects in the %s cluster err: %s", name, err)
 		log.Info("Deleting all mca objects")
 		if _, err = client.ManageObjects(metaclient1.ActionCreateTemplates, metaclient1.MCA, "delete"); err != nil {
-			log.Errorf("Couldn't delete k8s ManagedClusterAction objects in the %s cluster err: %s", client.Spoke, err)
+			log.Errorf("Couldn't delete k8s ManagedClusterAction objects in the %s cluster err: %s", name, err)
 			return err
 		}
 		return err
@@ -66,14 +186,14 @@ func launchBackupJobs(client metaclient1.Client) error {
 		if errors.IsAlreadyExists(err) {
 			_, err = client.ManageObjects(metaclient1.ViewCreateTemplates, metaclient1.MCV, "delete")
 			if err != nil {
-				log.Errorf("Couldn't delete existing ManagedclusterView object in the %s cluster err: %s", client.Spoke, err)
+				log.Errorf("Couldn't delete existing ManagedclusterView object in the %s cluster err: %s", name, err)
 				return err
 			}
 		}
 		if errors.IsNotFound(err) {
 			err = client.LaunchKubernetesObjects(metaclient1.ViewCreateTemplates, "create")
 			if err != nil {
-				log.Errorf("Couldn't launch k8s ManagedclusterView object the %s cluster err: %s", client.Spoke, err)
+				log.Errorf("Couldn't launch k8s ManagedclusterView object the %s cluster err: %s", name, err)
 				return err
 			}
 		}
@@ -92,7 +212,7 @@ func launchBackupJobs(client metaclient1.Client) error {
 	// delete managedclusterview
 	_, err = client.ManageObjects(metaclient1.ViewCreateTemplates, metaclient1.MCV, "delete")
 	if err != nil {
-		log.Errorf("Couldn't delete existing ManagedclusterView object in the %s cluster err: %s", client.Spoke, err)
+		log.Errorf("Couldn't delete existing ManagedclusterView object in the %s cluster err: %s", name, err)
 		return err
 	}
 
@@ -100,14 +220,14 @@ func launchBackupJobs(client metaclient1.Client) error {
 	//delete the namespace in the spoke, which will delete the completed job and associated pod.
 	err = client.LaunchKubernetesObjects(metaclient1.JobDeleteTemplates, "create")
 	if err != nil {
-		log.Errorf("Couldn't launch k8 objects in the %s cluster err: %s", client.Spoke, err)
+		log.Errorf("Couldn't launch k8 objects in the %s cluster err: %s", name, err)
 		return err
 	}
 	log.Info("Successfully deleted all Kubernetes objects")
 
 	return nil
 }
-
+*/
 var triggerBackupCmd = &cobra.Command{
 	Use:   "triggerBackup",
 	Short: "It will trigger the backup of the resources in the spoke cluster",
@@ -115,15 +235,22 @@ var triggerBackupCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// get spoke cluster
 		Spoke, _ := cmd.Flags().GetString("Spoke")
+		splittedParam := strings.Split(Spoke, ",")
+		Clustername := []string{}
+		for _, v := range splittedParam {
+			Clustername = append(Clustername, strings.TrimSpace(v))
+		}
+
 		BackupPath, _ := cmd.Flags().GetString("BackupPath")
 		KubeconfigPath, _ := cmd.Flags().GetString("KubeconfigPath")
 
-		client, err := metaclient1.New(Spoke, BackupPath, KubeconfigPath)
+		client, err := metaclient1.New(Clustername, BackupPath, KubeconfigPath)
 		if err != nil {
 			return err
 		}
 
-		err = launchBackupJobs(client)
+		//	err = launchBackupJobs(client)
+		err = multiSpokeLaunch(client)
 		if err != nil {
 			return err
 		}
