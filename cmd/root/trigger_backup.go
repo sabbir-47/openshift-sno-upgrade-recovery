@@ -1,18 +1,19 @@
 /*
-Copyright © 2021 Yolanda Robla <yroblamo@redhat.com>
+ * Copyright 2022 Red Hat, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package root
 
 import (
@@ -23,14 +24,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	metaclient1 "github.com/redhat-ztp/openshift-ai-trigger-backup/pkg/client"
+	metaclient1 "github.com/redhat-ztp/openshift-sno-upgrade-recovery/pkg/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	log "github.com/sirupsen/logrus"
-	//"net/url"
-	//"strings"
 )
 
 type Status struct {
@@ -44,7 +43,7 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 	var mu sync.Mutex
 	ch := make(chan string, len(client.Spoke))
 	var wg sync.WaitGroup
-	log.Info("Backup will be launched concurrently on clusters: %s", client.Spoke)
+	log.Infof("Backup will be launched concurrently on clusters: %s", client.Spoke)
 	for _, v := range client.Spoke {
 		wg.Add(1)
 		go func(client metaclient1.Client, v string, ch chan string, wg *sync.WaitGroup) {
@@ -184,15 +183,21 @@ func init() {
 	rootCmd.AddCommand(triggerBackupCmd)
 
 	triggerBackupCmd.Flags().StringP("Spoke", "s", "", "Name of the Spoke cluster")
-	triggerBackupCmd.MarkFlagRequired("Spoke")
+	err := triggerBackupCmd.MarkFlagRequired("Spoke")
+	if err != nil {
+		return
+	}
 
 	triggerBackupCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
-	triggerBackupCmd.MarkFlagRequired("KubeconfigPath")
+	err = triggerBackupCmd.MarkFlagRequired("KubeconfigPath")
+	if err != nil {
+		return
+	}
 
 	triggerBackupCmd.Flags().StringP("BackupPath", "p", "/var/recovery", "Path of recovery partition where backups will be stored")
 
 	// bind to viper
-	viper.BindPFlag("Spoke", triggerBackupCmd.Flags().Lookup("Spoke"))
-	viper.BindPFlag("BackupPath", triggerBackupCmd.Flags().Lookup("BackupPath"))
-	viper.BindPFlag("KubeconfigPath", triggerBackupCmd.Flags().Lookup("KubeconfigPath"))
+	_ = viper.BindPFlag("Spoke", triggerBackupCmd.Flags().Lookup("Spoke"))
+	_ = viper.BindPFlag("BackupPath", triggerBackupCmd.Flags().Lookup("BackupPath"))
+	_ = viper.BindPFlag("KubeconfigPath", triggerBackupCmd.Flags().Lookup("KubeconfigPath"))
 }
