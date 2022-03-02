@@ -312,6 +312,8 @@ func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
 	return status
 }
 
+// this function must be improved to take into account that there should be a timeout window and
+// if the value returns false after the window, an error should be returned.
 func (c Client) CheckStatus(resourceType string, clusterName string) error {
 
 	// this is static for now, it should be parametrized.
