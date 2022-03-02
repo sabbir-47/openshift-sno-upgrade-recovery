@@ -115,7 +115,7 @@ func (c Client) SpokeClusterExists(name string) bool {
 		Resource: "managedclusters",
 	}
 
-	log.WithFields(log.Fields{"SpokeStatus": "Checking"}).Debugf("Checking if the Spoke cluster: %s exist...", c.Spoke)
+	log.WithFields(log.Fields{"SpokeStatus": "Checking"}).Debugf("Checking if the Spoke cluster: %s exist...", name)
 	foundSpokeCluster, err := c.KubernetesClient.Resource(gvr).Get(context.Background(), name, v1.GetOptions{})
 
 	if err != nil {
@@ -179,7 +179,8 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 		newdata.ResourceName = item.ResourceName
 
 		log.Debug(strings.Repeat("-", 60))
-		log.Debugf("####### Creating kubernetes object: [ %s ] #######", item.ResourceName)
+		log.WithFields(log.Fields{"LaunchKubernetesObjects": "Launching"}).Debugf("Creating kubernetes object: [ %s ]", item.ResourceName)
+		//	log.Debugf("####### Creating kubernetes object: [ %s ] #######", item.ResourceName)
 		log.Debug(strings.Repeat("-", 60))
 
 		log.Debugf("rendering resource: %s, data passed: %s for cluster: %s", item.ResourceName, newdata, clusterName)
@@ -217,8 +218,8 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 			Version:  gvk.Version,
 			Resource: mapping.Resource.Resource,
 		}
-
-		log.Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, clusterName)
+		log.WithFields(log.Fields{"LaunchKubernetesObjects": "Creating Resource"}).Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, clusterName)
+		//	log.Debugf("CREATING the resource: [%s] at namespace: [backupresource] of spoke: [%s] ....", item.ResourceName, clusterName)
 		err = c.CreateKubernetesObjects(clusterName, obj, resource)
 		if err != nil {
 			log.Error(err)
@@ -226,7 +227,8 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 		}
 
 		log.Debug(strings.Repeat("-", 60))
-		log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
+		log.WithFields(log.Fields{"LaunchKubernetesObjects": "Created"}).Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
+		//	log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
 		log.Debug(strings.Repeat("-", 60))
 
 	}
@@ -237,7 +239,8 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 
 	w := new(bytes.Buffer)
 
-	log.Debugf("Parsing template: %s", resourceName)
+	//log.Debugf("Parsing template: %s", resourceName)
+	log.WithFields(log.Fields{"Rendertemplate": "Starting"}).Debugf("Parsing template: %s", resourceName)
 
 	tmpl, err := template.New(resourceName).Parse(commonTemplates + TemplateData)
 	if err != nil {
@@ -248,7 +251,8 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 	if err != nil {
 		return w, fmt.Errorf("failed to render template %s: %v", resourceName, err)
 	}
-	log.Debugf("Successfully parsed template: %s", resourceName)
+	//	log.Debugf("Successfully parsed template: %s", resourceName)
+	log.WithFields(log.Fields{"Rendertemplate": "Done"}).Debugf("Successfully parsed template: %s", resourceName)
 	return w, nil
 }
 
@@ -286,7 +290,8 @@ func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, r
 			if err != nil {
 				return nil, err
 			}
-			log.Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
+			log.WithFields(log.Fields{"DeleteObject": "Done"}).Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
+		//	log.Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
 
 		default:
 			return nil, fmt.Errorf("no condition matched")

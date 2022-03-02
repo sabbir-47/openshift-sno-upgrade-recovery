@@ -17,8 +17,10 @@ package root
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	metaclient1 "github.com/redhat-ztp/openshift-ai-trigger-backup/pkg/client"
@@ -42,6 +44,7 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 	var mu sync.Mutex
 	ch := make(chan string, len(client.Spoke))
 	var wg sync.WaitGroup
+	log.Info("Backup will be launched concurrently on clusters: %s", client.Spoke)
 	for _, v := range client.Spoke {
 		wg.Add(1)
 		go func(client metaclient1.Client, v string, ch chan string, wg *sync.WaitGroup) {
@@ -58,9 +61,14 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 	}
 	wg.Wait()
 	close(ch)
+
+	fmt.Println(strings.Repeat("-", 85))
+	w := tabwriter.NewWriter(os.Stdout, 10, 0, 0, ' ', tabwriter.Debug)
+	fmt.Fprintln(w, "Cluster Name\tCluster Status\t Error\t")
 	for _, v := range status {
-		fmt.Printf("##Name: %s ###Cluster Status: %s ### Error: %s \n", v.ClusterName, v.ClusterStatus, v.ClusterError)
+		fmt.Fprintln(w, v.ClusterName, "\t", v.ClusterStatus, "\t", v.ClusterError, "\t")
 	}
+	w.Flush()
 	return nil
 }
 
@@ -79,13 +87,6 @@ func f1(client metaclient1.Client, name string, ch chan string, wg *sync.WaitGro
 	time.Sleep(time.Second * 2)
 
 	log.Info("Creating Kubernetes objects")
-
-	// TO DO:
-	// 1. If client can't create any object it should delete all the created object - done
-	// 2. Query with a function if the k8s job is succesfully finished.
-	// 3. Once done, we must cleanup artifacts at spoke.
-
-	// Launch k8s job, if it fails to launch it must delete the objects it created.
 
 	err := client.LaunchKubernetesObjects(name, metaclient1.ActionCreateTemplates, "create")
 	if err != nil {
