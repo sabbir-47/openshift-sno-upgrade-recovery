@@ -4,5 +4,7 @@
 set -e -x
 echo "Linting go code..."
 golint ./cmd ./pkg
+make verify
+make golangci-lint
 echo "Running go tests..."
-KUBEBUILDER_ASSETS="$(pwd)/bin" go test -v -covermode=count -coverprofile=coverage.out ./...
+find . -name go.mod -not -path "*/vendor/*" -execdir go test -v -covermode=count -coverprofile=coverage.out  ./... \;
