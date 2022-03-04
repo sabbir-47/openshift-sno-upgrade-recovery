@@ -19,13 +19,5 @@ build:
 	./hack/build-go.sh
 .PHONY: build
 
-build-image:
-	$(CONTAINER_COMMAND) build $(CONTAINER_BUILD_PARAMS) -f Dockerfile . -t $(IMAGE)
-.PHONY: build-image
-
-push-image:
-	$(CONTAINER_COMMAND) push ${IMAGE}
-.PHONY: push-image
-
 
 GO_TEST_PACKAGES :=./pkg/... ./cmd/...

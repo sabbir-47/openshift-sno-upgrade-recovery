@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// MCA, MCV represnts the corresponding resources
 var (
 	MCA    = "managedclusteractions"
 	MCV    = "managedclusterviews"
@@ -33,6 +34,7 @@ var (
 	NErr   = "NO ERROR"
 )
 
+// Client provides a k8s dynamic client
 type Client struct {
 	Spoke            []string
 	BackupPath       string
@@ -40,6 +42,7 @@ type Client struct {
 	KubernetesClient dynamic.Interface
 }
 
+// TemplateData provides template rendering data
 type TemplateData struct {
 	ResourceName string
 	ClusterName  string
@@ -53,6 +56,7 @@ type ResourceTemplate struct {
 	Template     string
 }
 
+// ActionCreateTemplates populates templates for creation of managedclusteraction resources
 var ActionCreateTemplates = []ResourceTemplate{
 	{"backup-create-namespace", mngClusterActCreateNS},
 	{"backup-create-serviceaccount", mngClusterActCreateSA},
@@ -60,13 +64,18 @@ var ActionCreateTemplates = []ResourceTemplate{
 	{"backup-create-job", mngClusterActCreateJob},
 }
 
+// ViewCreateTemplates populates templates for creation of managedclusterview resource
 var ViewCreateTemplates = []ResourceTemplate{
 	{"backup-create-clusterview", mngClusterViewJob},
 }
+
+// JobDeleteTemplates populates templates for creation of managedclusteraction resource to delete the namespace in the spoke
 var JobDeleteTemplates = []ResourceTemplate{
 	{"backup-delete-ns", mngClusterActDeleteNS},
 }
 
+// New creates a new instance of k8s client
+// returns:			client, error
 func New(Spoke []string, BackupPath string, KubeconfigPath string) (Client, error) {
 	rand.Seed(time.Now().UnixNano())
 	c := Client{Spoke, BackupPath, KubeconfigPath, nil}
@@ -106,6 +115,8 @@ func New(Spoke []string, BackupPath string, KubeconfigPath string) (Client, erro
 	return c, nil
 }
 
+// SpokeClusterExists verifies if a provided spoke cluster do exist or not
+// returns:			bool
 func (c Client) SpokeClusterExists(name string) bool {
 
 	// using client, get if spoke cluster with given name exists
@@ -151,6 +162,8 @@ func (c Client) SpokeClusterExists(name string) bool {
 	return false
 }
 
+// GetConfig verifies providedkubeconfig
+// returns:			*rest.Config, error
 func (c Client) GetConfig() (*rest.Config, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
 	if err != nil {
@@ -160,7 +173,9 @@ func (c Client) GetConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceTemplate, action string) error {
+// LaunchKubernetesObjects creates managedclusteraction and managedclusterview resources from template
+// returns:			error
+func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceTemplate) error {
 
 	config, err := c.GetConfig()
 	if err != nil {
@@ -184,7 +199,7 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 		log.Debug(strings.Repeat("-", 60))
 
 		log.Debugf("rendering resource: %s, data passed: %s for cluster: %s", item.ResourceName, newdata, clusterName)
-		w, err := c.renderYamlTemplate(item.ResourceName, item.Template, newdata)
+		w, err := c.RenderYamlTemplate(item.ResourceName, item.Template, newdata)
 		if err != nil && !errors.IsAlreadyExists(err) {
 			return err
 		}
@@ -235,14 +250,19 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 	return nil
 }
 
-func (c Client) renderYamlTemplate(resourceName string, TemplateData string, data TemplateData) (*bytes.Buffer, error) {
+// RenderYamlTemplate renders a single yaml template
+//            resourceName - resource name
+//            templateBody - template body
+// returns:   bytes.Buffer rendered template
+//            error
+func (c Client) RenderYamlTemplate(resourceName string, templatebody string, data TemplateData) (*bytes.Buffer, error) {
 
 	w := new(bytes.Buffer)
 
 	//log.Debugf("Parsing template: %s", resourceName)
 	log.WithFields(log.Fields{"Rendertemplate": "Starting"}).Debugf("Parsing template: %s", resourceName)
 
-	tmpl, err := template.New(resourceName).Parse(commonTemplates + TemplateData)
+	tmpl, err := template.New(resourceName).Parse(commonTemplates + templatebody)
 	if err != nil {
 		return w, fmt.Errorf("failed to parse template %s: %v", resourceName, err)
 	}
@@ -256,6 +276,9 @@ func (c Client) renderYamlTemplate(resourceName string, TemplateData string, dat
 	return w, nil
 }
 
+// CreateKubernetesObjects creates specific mca and mcv object targeted to spoke cluster based on
+// unstructured object and gvr
+// returns:			error
 func (c Client) CreateKubernetesObjects(clusterName string, obj *unstructured.Unstructured, resource schema.GroupVersionResource) error {
 
 	_, err := c.KubernetesClient.Resource(resource).Namespace(clusterName).Create(context.Background(), obj, v1.CreateOptions{})
@@ -266,6 +289,9 @@ func (c Client) CreateKubernetesObjects(clusterName string, obj *unstructured.Un
 	return nil
 }
 
+// ManageObjects can query and delete k8s resource
+// returns:			*unstructured.Unstructured (view data)
+//                   error
 func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, resourceType string, action string) (*unstructured.Unstructured, error) {
 
 	gvr := schema.GroupVersionResource{
@@ -300,6 +326,8 @@ func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, r
 	return view, nil
 }
 
+// CheckViewProcessing checks whether managedclusterview is processing
+// returns: 	processing bool
 func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
 	// probably it is better to check if the result field is not empty and  status and type
 	// need to verify
@@ -312,9 +340,12 @@ func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
 	return status
 }
 
-// this function must be improved to take into account that there should be a timeout window and
-// if the value returns false after the window, an error should be returned.
+// CheckStatus checks whether the job launched on the spoke was successfully launched and finished
+// returns: 	error
 func (c Client) CheckStatus(resourceType string, clusterName string) error {
+
+	// Comment: this function must be improved to take into account that there should be a timeout window and
+	// if the value returns false after the window, an error should be returned.
 
 	// this is static for now, it should be parametrized.
 	for i := 0; i < 10; i++ {

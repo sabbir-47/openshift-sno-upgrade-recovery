@@ -23,7 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	metaclient1 "github.com/redhat-ztp/openshift-ai-trigger-backup/pkg/client"
+	metaclient1 "github.com/redhat-ztp/openshift-sno-upgrade-recovery/pkg/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -39,6 +39,8 @@ type Status struct {
 	ClusterError  interface{}
 }
 
+// multiSpokeLaunch initiates backup to all the provided spoke clusters concurrently
+// returns:			error
 func multiSpokeLaunch(client metaclient1.Client) error {
 	status := []Status{}
 	var mu sync.Mutex
@@ -72,6 +74,8 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 	return nil
 }
 
+// launchBackupJobs calls various Client functions to launch k8s jobs to trigger backup
+// returns:			Job status, error
 func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg *sync.WaitGroup) (string, error) {
 
 	defer wg.Done()
@@ -88,7 +92,7 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	log.Info("Creating Kubernetes objects")
 
-	err := client.LaunchKubernetesObjects(name, metaclient1.ActionCreateTemplates, "create")
+	err := client.LaunchKubernetesObjects(name, metaclient1.ActionCreateTemplates)
 	if err != nil {
 		log.Errorf("Couldn't launch k8s ManagedClusterAction objects in the %s cluster err: %s", name, err)
 		log.Info("Deleting all mca objects")
@@ -111,7 +115,7 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 			}
 		}
 		if errors.IsNotFound(err) {
-			err = client.LaunchKubernetesObjects(name, metaclient1.ViewCreateTemplates, "create")
+			err = client.LaunchKubernetesObjects(name, metaclient1.ViewCreateTemplates)
 			if err != nil {
 				return metaclient1.Failed, fmt.Errorf("couldn't launch k8s ManagedclusterView object the %s cluster err: %s", name, err)
 				//	return err
@@ -138,7 +142,7 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	time.Sleep(1 * time.Second)
 	//delete the namespace in the spoke, which will delete the completed job and associated pod.
-	err = client.LaunchKubernetesObjects(name, metaclient1.JobDeleteTemplates, "create")
+	err = client.LaunchKubernetesObjects(name, metaclient1.JobDeleteTemplates)
 	if err != nil {
 		return metaclient1.Failed, fmt.Errorf("couldn't launch k8 objects in the %s cluster err: %s", name, err)
 		//	return err
@@ -184,15 +188,19 @@ func init() {
 	rootCmd.AddCommand(triggerBackupCmd)
 
 	triggerBackupCmd.Flags().StringP("Spoke", "s", "", "Name of the Spoke cluster")
-	triggerBackupCmd.MarkFlagRequired("Spoke")
+	if err := triggerBackupCmd.MarkFlagRequired("Spoke"); err != nil {
+		return
+	}
 
 	triggerBackupCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
-	triggerBackupCmd.MarkFlagRequired("KubeconfigPath")
+	if err := triggerBackupCmd.MarkFlagRequired("KubeconfigPath"); err != nil {
+		return
+	}
 
 	triggerBackupCmd.Flags().StringP("BackupPath", "p", "/var/recovery", "Path of recovery partition where backups will be stored")
 
 	// bind to viper
-	viper.BindPFlag("Spoke", triggerBackupCmd.Flags().Lookup("Spoke"))
-	viper.BindPFlag("BackupPath", triggerBackupCmd.Flags().Lookup("BackupPath"))
-	viper.BindPFlag("KubeconfigPath", triggerBackupCmd.Flags().Lookup("KubeconfigPath"))
+	_ = viper.BindPFlag("Spoke", triggerBackupCmd.Flags().Lookup("Spoke"))
+	_ = viper.BindPFlag("BackupPath", triggerBackupCmd.Flags().Lookup("BackupPath"))
+	_ = viper.BindPFlag("KubeconfigPath", triggerBackupCmd.Flags().Lookup("KubeconfigPath"))
 }
