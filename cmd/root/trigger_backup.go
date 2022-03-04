@@ -114,7 +114,6 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 			}
 		}
 		if errors.IsNotFound(err) {
-
 			err = client.LaunchKubernetesObjects(name, metaclient1.ViewCreateTemplates)
 			if err != nil {
 				return metaclient1.Failed, fmt.Errorf("couldn't launch k8s ManagedclusterView object the %s cluster err: %s", name, err)
@@ -188,14 +187,12 @@ func init() {
 	rootCmd.AddCommand(triggerBackupCmd)
 
 	triggerBackupCmd.Flags().StringP("Spoke", "s", "", "Name of the Spoke cluster")
-	err := triggerBackupCmd.MarkFlagRequired("Spoke")
-	if err != nil {
+	if err := triggerBackupCmd.MarkFlagRequired("Spoke"); err != nil {
 		return
 	}
 
 	triggerBackupCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
-	err = triggerBackupCmd.MarkFlagRequired("KubeconfigPath")
-	if err != nil {
+	if err := triggerBackupCmd.MarkFlagRequired("KubeconfigPath"); err != nil {
 		return
 	}
 

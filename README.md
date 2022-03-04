@@ -23,4 +23,3 @@ in the spoke to clean up artifacts.
 
 In order to run as a job one can launch the job by following pkg/client/templmates.go file, where the launched
  objects template is provided.  
-  
