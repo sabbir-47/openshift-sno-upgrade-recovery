@@ -18,7 +18,7 @@
 package main
 
 import (
-	cmd "github.com/redhat-ztp/openshift-ai-trigger-backup/cmd/root"
+	cmd "github.com/redhat-ztp/openshift-sno-upgrade-recovery/cmd/root"
 )
 
 func main() {
