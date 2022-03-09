@@ -1,6 +1,7 @@
 # openshift-sno-upgrade-recovery
 
-Cli to orchestrate backup requests on an ACM hub to spoke clusters. It will trigger the backup jobs from <https://github.com/redhat-ztp/openshift-ai-image-backup>
+Cli to orchestrate backup requests on an ACM hub to spoke clusters. It will trigger the backup jobs from  
+ <https://github.com/redhat-ztp/openshift-ai-image-backup>
 
 ## How to build
 
