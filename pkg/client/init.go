@@ -26,12 +26,16 @@ import (
 
 // MCA, MCV represnts the corresponding resources
 var (
-	MCA    = "managedclusteractions"
-	MCV    = "managedclusterviews"
-	Failed = "FAILED"
-	Done   = "DONE"
-	NExist = "NON-EXISTENT"
-	NErr   = "NO ERROR"
+	MCA          = "managedclusteractions"
+	MCV          = "managedclusterviews"
+	Failed       = "FAILED"
+	Done         = "DONE"
+	NExist       = "NON-EXISTENT"
+	NErr         = "NO ERROR"
+	TimeInterval = 5
+	TimeOut      = 120
+	Launch       = "launched"
+	Complete     = "completed"
 )
 
 // Client provides a k8s dynamic client
@@ -195,7 +199,6 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 
 		log.Debug(strings.Repeat("-", 60))
 		log.WithFields(log.Fields{"LaunchKubernetesObjects": "Launching"}).Debugf("Creating kubernetes object: [ %s ]", item.ResourceName)
-		//	log.Debugf("####### Creating kubernetes object: [ %s ] #######", item.ResourceName)
 		log.Debug(strings.Repeat("-", 60))
 
 		log.Debugf("rendering resource: %s, data passed: %s for cluster: %s", item.ResourceName, newdata, clusterName)
@@ -243,7 +246,6 @@ func (c Client) LaunchKubernetesObjects(clusterName string, template []ResourceT
 
 		log.Debug(strings.Repeat("-", 60))
 		log.WithFields(log.Fields{"LaunchKubernetesObjects": "Created"}).Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
-		//	log.Debugf("####### Successfully created the resource: [%s] at namespace: backupresource of spoke: [%s] ... #######", item.ResourceName, clusterName)
 		log.Debug(strings.Repeat("-", 60))
 
 	}
@@ -317,8 +319,6 @@ func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, r
 				return nil, err
 			}
 			log.WithFields(log.Fields{"DeleteObject": "Done"}).Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
-		//	log.Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
-
 		default:
 			return nil, fmt.Errorf("no condition matched")
 		}
@@ -326,56 +326,87 @@ func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, r
 	return view, nil
 }
 
-// CheckViewProcessing checks whether managedclusterview is processing
+// ViewProcessing checks whether managedclusterview is processing or complete
 // returns: 	processing bool
-func (c Client) CheckViewProcessing(viewConditions []interface{}) string {
-	// probably it is better to check if the result field is not empty and  status and type
-	// need to verify
-	var status, message string
+func (c Client) ViewProcessing(viewConditions []interface{}) (string, string) {
+
+	var status, t string
 	for _, condition := range viewConditions {
 		status = condition.(map[string]interface{})["status"].(string)
-		message = condition.(map[string]interface{})["message"].(string)
-		log.Debugf("job status from mcv status: [%s], message: [%s]", status, message)
+		t = condition.(map[string]interface{})["type"].(string)
+		log.Debugf("job status from mcv status: [%s], type: [%s]", status, t)
 	}
-	return status
+	return status, t
+}
+
+// JobStatus uses timeout to verify the state of the job in a predefined window
+// returns: 	error
+func (c Client) JobStatus(clusterName string, action string) error {
+
+	ticker := time.NewTicker(time.Second * time.Duration(TimeInterval)).C
+	timeout := time.After(time.Second * time.Duration(TimeOut))
+
+OuterLoop:
+	for {
+		select {
+		case <-timeout:
+			log.WithFields(log.Fields{"timeout": "Checking"}).Debug("function timedout")
+			return fmt.Errorf("couldn't verify the backup job completion before a predefined time window")
+
+		case <-ticker:
+			if err := c.CheckStatus(MCV, clusterName, action); err != nil {
+				fmt.Printf("err: %v", err)
+			} else {
+				break OuterLoop
+			}
+		}
+	}
+	return nil
 }
 
 // CheckStatus checks whether the job launched on the spoke was successfully launched and finished
 // returns: 	error
-func (c Client) CheckStatus(resourceType string, clusterName string) error {
+func (c Client) CheckStatus(resourceType string, clusterName string, action string) error {
 
-	// Comment: this function must be improved to take into account that there should be a timeout window and
-	// if the value returns false after the window, an error should be returned.
+	log.Debug("####### Checking status of kubernetes job #######")
 
-	// this is static for now, it should be parametrized.
-	for i := 0; i < 10; i++ {
-
-		time.Sleep(1 * time.Second)
-		log.Debug("####### Checking if managedclusterview related to job is present #######")
-
-		clusterView, err := c.ManageObjects(clusterName, ViewCreateTemplates, resourceType, "get")
-		if err != nil {
-			log.Errorf("Couldn't find managedclusterview from %s cluster; err: %s", c.Spoke, err)
-			return err
-		}
-		log.Debug("Found managedclusterview object")
-
-		conditions, exists, err := unstructured.NestedSlice(clusterView.Object, "status", "conditions")
-		if err != nil {
-			log.Error(err)
-			return err
-		}
-		log.Debugf("conditions: %s", conditions)
-		if !exists {
-			return fmt.Errorf("couldn't find the intended structure")
-		}
-		value := c.CheckViewProcessing(conditions)
-		log.Debugf("value is %s", value)
-		if value == "True" {
-			break
-		}
-
+	clusterView, err := c.ManageObjects(clusterName, ViewCreateTemplates, resourceType, "get")
+	if err != nil {
+		log.Errorf("Couldn't find managedclusterview from %s cluster; err: %s", c.Spoke, err)
+		return err
 	}
-	log.Debug("####### out of the loop #######")
-	return nil
+	log.Debug("Found managedclusterview object")
+
+	// since we are using same function for verifying if the job launched or finished, the conditions will vary
+	var matchingCondition = []string{}
+	if action == Complete {
+		matchingCondition = []string{"status", "result", "status", "conditions"}
+	} else {
+		matchingCondition = []string{"status", "conditions"}
+	}
+
+	conditions, exists, err := unstructured.NestedSlice(clusterView.Object, matchingCondition...)
+
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+	log.Debugf("conditions: %s", conditions)
+	if !exists {
+		return fmt.Errorf("unable to traverse object, maybe result field is yet not available")
+	}
+	value, t := c.ViewProcessing(conditions)
+	if value == "True" {
+		switch t {
+		case "Processing":
+			log.Debug("The job has successfully launched")
+			return nil
+		case "Complete":
+			log.Debug("The job has successfully finished")
+			return nil
+		}
+	}
+
+	return fmt.Errorf("expecting the status to be either Processing or Complete but found: %s for cluster: %s", t, clusterName)
+
 }

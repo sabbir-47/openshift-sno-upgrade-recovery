@@ -1,6 +1,6 @@
 # openshift-ai-trigger-backup
 
-Cli to orchestrate backup requests on an ACM hub to spoke clusters. It will trigger the backup jobs from https://github.com/redhat-ztp/openshift-ai-image-backup
+Cli to orchestrate backup requests on an ACM hub to spoke clusters. It will trigger the backup jobs from <https://github.com/redhat-ztp/openshift-ai-image-backup>
 
 ## How to build
 
@@ -14,9 +14,6 @@ In order to run trigger backup from command line, you need to have a valid KUBEC
 This command will create four managedclusterAction and one managedclusterView per spoke in the hub cluster, that will launch the backup jobs in the spoke.
 Once the job is finished, it will automatically remove managedclusterView on the hub and the creatd namaspace in the spoke to clean up artifacts.
 
-
-
 ### Running from a job
 
 In order to run as a job one can launch the job by following pkg/client/templmates.go file, where the launched objects template is provided.
-
