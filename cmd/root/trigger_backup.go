@@ -87,6 +87,7 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	}
 	log.Info("Cluster exists!")
+	time.Sleep(time.Second * 2)
 
 	log.Info("Creating Kubernetes objects")
 
@@ -113,6 +114,7 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 			}
 		}
 		if errors.IsNotFound(err) {
+
 			err = client.LaunchKubernetesObjects(name, metaclient1.ViewCreateTemplates)
 			if err != nil {
 				return metaclient1.Failed, fmt.Errorf("couldn't launch k8s ManagedclusterView object the %s cluster err: %s", name, err)
@@ -122,7 +124,6 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 	}
 	log.Info("Successfully created ManagedclusterView object")
 
-	time.Sleep(1 * time.Second)
 	// check job status via managedclusterview
 	err = client.JobStatus(name, metaclient1.Launch)
 	if err != nil {
