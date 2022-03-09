@@ -46,7 +46,7 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 	var mu sync.Mutex
 	ch := make(chan string, len(client.Spoke))
 	var wg sync.WaitGroup
-	log.Info("Backup will be launched concurrently on clusters: %s", client.Spoke)
+	log.Infof("Backup will be launched concurrently on clusters: %s", client.Spoke)
 	for _, v := range client.Spoke {
 		wg.Add(1)
 		go func(client metaclient1.Client, v string, ch chan string, wg *sync.WaitGroup) {
