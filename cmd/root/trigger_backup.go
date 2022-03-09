@@ -1,18 +1,19 @@
 /*
-Copyright © 2021 Yolanda Robla <yroblamo@redhat.com>
+ * Copyright 2022 Red Hat, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package root
 
 import (
@@ -29,8 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	log "github.com/sirupsen/logrus"
-	//"net/url"
-	//"strings"
 )
 
 type Status struct {
@@ -188,12 +187,16 @@ func init() {
 	rootCmd.AddCommand(triggerBackupCmd)
 
 	triggerBackupCmd.Flags().StringP("Spoke", "s", "", "Name of the Spoke cluster")
-	if err := triggerBackupCmd.MarkFlagRequired("Spoke"); err != nil {
+
+	err := triggerBackupCmd.MarkFlagRequired("Spoke")
+	if err != nil {
 		return
 	}
 
 	triggerBackupCmd.Flags().StringP("KubeconfigPath", "k", "", "Path to kubeconfig file")
-	if err := triggerBackupCmd.MarkFlagRequired("KubeconfigPath"); err != nil {
+
+	err = triggerBackupCmd.MarkFlagRequired("KubeconfigPath")
+	if err != nil {
 		return
 	}
 
