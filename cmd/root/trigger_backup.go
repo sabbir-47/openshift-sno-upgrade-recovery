@@ -57,7 +57,7 @@ func multiSpokeLaunch(client metaclient1.Client) error {
 			} else {
 				status = append(status, Status{v, retStatus, metaclient1.NErr})
 			}
-			fmt.Printf("The value received from chan: %s is %s and %s\n", v, retStatus, err)
+			fmt.Printf("The value received from chan: %s is %s and %v\n", v, retStatus, err)
 			mu.Unlock()
 		}(client, v, ch, &wg)
 	}
@@ -88,7 +88,6 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	}
 	log.Info("Cluster exists!")
-	time.Sleep(time.Second * 2)
 
 	log.Info("Creating Kubernetes objects")
 
@@ -126,21 +125,22 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	time.Sleep(1 * time.Second)
 	// check job status via managedclusterview
-	err = client.CheckStatus(metaclient1.MCV, name)
+	err = client.JobStatus(name, metaclient1.Launch)
 	if err != nil {
-		return metaclient1.Failed, fmt.Errorf("couldn't verify the job status, err: %s", err)
-		//return nil
+		return metaclient1.Failed, fmt.Errorf("couldn't verify the initiation of the job, err: %s", err)
 	}
-	time.Sleep(1 * time.Second)
+
+	err = client.JobStatus(name, metaclient1.Complete)
+	if err != nil {
+		return metaclient1.Failed, fmt.Errorf("couldn't verify if the job has finished, err: %s", err)
+	}
 
 	// delete managedclusterview
 	_, err = client.ManageObjects(name, metaclient1.ViewCreateTemplates, metaclient1.MCV, "delete")
 	if err != nil {
 		return metaclient1.Failed, fmt.Errorf("couldn't delete existing ManagedclusterView object in the %s cluster err: %s", name, err)
-		//	return err
 	}
 
-	time.Sleep(1 * time.Second)
 	//delete the namespace in the spoke, which will delete the completed job and associated pod.
 	err = client.LaunchKubernetesObjects(name, metaclient1.JobDeleteTemplates)
 	if err != nil {

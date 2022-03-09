@@ -86,7 +86,7 @@ spec:
                   - launchBackup
                   - "--BackupPath"
                   - /var/recovery
-                image: 2620-52-0-1302--b846.sslip.io:5000/olm/openshift-ai-image-backup:latest
+                image: 2620-52-0-1302--1db3.sslip.io:5000/olm/openshift-ai-image-backup:latest
                 name: container-image
                 securityContext:
                   privileged: true
