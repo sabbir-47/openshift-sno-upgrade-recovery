@@ -318,7 +318,6 @@ func (c Client) ManageObjects(clusterName string, template []ResourceTemplate, r
 				return nil, err
 			}
 			log.WithFields(log.Fields{"DeleteObject": "Done"}).Debugf("####### Successfully deleted the %s resource named: [%s] for cluster: %s #######", resourceType, items.ResourceName, clusterName)
-
 		default:
 			return nil, fmt.Errorf("no condition matched")
 		}

@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
-	"time"
 
 	metaclient1 "github.com/redhat-ztp/openshift-sno-upgrade-recovery/pkg/client"
 	"github.com/spf13/cobra"
@@ -87,7 +86,6 @@ func launchBackupJobs(client metaclient1.Client, name string, ch chan string, wg
 
 	}
 	log.Info("Cluster exists!")
-	time.Sleep(time.Second * 2)
 
 	log.Info("Creating Kubernetes objects")
 
