@@ -19,8 +19,9 @@ package root
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
+
+	"github.com/spf13/cobra"
 
 	homedir "github.com/mitchellh/go-homedir"
 	"github.com/spf13/viper"
@@ -30,7 +31,7 @@ var cfgFile string
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "openshift-ai-trigger-backup",
+	Use:   "trigger-backup",
 	Short: "CLI tool to trigger backup tasks for spoke clusters",
 }
 
